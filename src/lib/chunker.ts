@@ -50,13 +50,26 @@ function splitSentences(paragraph: string): string[] {
   return out;
 }
 
-export function chunkText(text: string, maxLen = 300): string[] {
+export function chunkText(text: string, maxLen = 300, firstChunkMax?: number): string[] {
   const normalized = normalizeForTTS(text)
     .replace(/[\u2028\u2029]/g, '\n')
     .replace(/\s*\n\s*\n\s*/g, PARA)
     .replace(/[^\S\u2029]+/g, ' ')
     .trim();
   if (!normalized) return [];
+
+  const chunks = chunkNormalized(normalized, maxLen);
+  // Time-to-first-word is gated by how long the first chunk takes to
+  // synthesize, which scales with its length. Re-splitting the opening chunk
+  // under a smaller cap keeps that wait short, and the resulting run of small
+  // chunks lets the lookahead buffer fill quickly at the start of a read.
+  if (firstChunkMax !== undefined && firstChunkMax < maxLen && chunks.length > 0 && chunks[0].length > firstChunkMax) {
+    chunks.splice(0, 1, ...chunkNormalized(chunks[0], firstChunkMax));
+  }
+  return chunks;
+}
+
+function chunkNormalized(normalized: string, maxLen: number): string[] {
 
   const pieces: Piece[] = [];
   for (const [pi, paragraph] of normalized.split(PARA).entries()) {

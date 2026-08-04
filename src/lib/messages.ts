@@ -36,6 +36,10 @@ export interface DownloadProgress {
 // resolved model/voice/speed from settings.
 export type PlayerCommand =
   | { type: 'speak'; text: string; title?: string; modelId?: ModelId; voice?: string; speed?: number }
+  /** Warm-up sent while extraction is still running: spins up the player
+   *  context and loads the model so the following 'speak' finds both ready.
+   *  The background enriches it with the selected model, like 'speak'. */
+  | { type: 'prepare'; modelId?: ModelId }
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'stop' }

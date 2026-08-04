@@ -152,6 +152,10 @@ async function readTab(tabId: number, mode: 'page' | 'selection', fallbackText?:
     type: 'status',
     status: { state: 'preparing', modelId: null, detail: 'Reading page…' },
   });
+  // Warm the player while extraction runs: offscreen-document creation and
+  // the model load dominate the wait before the first word, and neither
+  // needs the text. The player dedupes this against the 'speak' that follows.
+  void deliverToPlayer({ type: 'prepare' });
   let result: ExtractResult | undefined;
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content/extract.js'] });
@@ -199,7 +203,7 @@ function errorStatus(detail: string): void {
 // ---------------------------------------------------------------------------
 
 /** Commands that justify spinning up the player context. */
-const CREATION_WORTHY = new Set<PlayerCommand['type']>(['speak', 'download']);
+const CREATION_WORTHY = new Set<PlayerCommand['type']>(['speak', 'prepare', 'download']);
 
 async function deliverToPlayer(cmd: PlayerCommand): Promise<void> {
   if (cmd.type === 'speak') {
@@ -211,6 +215,10 @@ async function deliverToPlayer(cmd: PlayerCommand): Promise<void> {
       return;
     }
     cmd = { ...cmd, modelId, voice: cmd.voice ?? s.voices[modelId], speed: s.speed };
+  } else if (cmd.type === 'prepare') {
+    const s = await getSettings();
+    if (!s.selectedModel) return; // the 'speak' that follows surfaces the error
+    cmd = { ...cmd, modelId: s.selectedModel };
   }
   if (!IS_CHROME_OFFSCREEN) {
     deliverLocal(cmd);
@@ -225,15 +233,16 @@ async function deliverToPlayer(cmd: PlayerCommand): Promise<void> {
     }
     await createOffscreen();
   }
-  // The player ACKs with `true`; retry until its module has loaded.
-  for (let attempt = 0; attempt < 30; attempt++) {
+  // The player ACKs with `true`; retry until its module has loaded. Short
+  // interval: this wait sits directly on the click-to-first-word path.
+  for (let attempt = 0; attempt < 120; attempt++) {
     try {
       const ack = await chrome.runtime.sendMessage({ target: 'player', cmd } satisfies Message);
       if (ack === true) return;
     } catch {
       // No listeners at all yet.
     }
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 50));
   }
   errorStatus('The audio player did not respond. Try reloading the extension.');
 }
