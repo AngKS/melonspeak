@@ -14,6 +14,7 @@ await esbuild.build({
     'tts-normalize': 'src/lib/tts-normalize.ts',
     'reading-tab': 'src/lib/reading-tab.ts',
     settings: 'src/lib/settings.ts',
+    'viz-levels': 'src/lib/viz-levels.ts',
   },
   bundle: true,
   format: 'esm',
@@ -25,6 +26,7 @@ const { serializeReadable } = await import(join(outdir, 'readable-text.js'));
 const { preprocessText, textToIds } = await import(join(outdir, 'supertonic-text.js'));
 const { computeBadge } = await import(join(outdir, 'reading-tab.js'));
 const settingsMod = await import(join(outdir, 'settings.js'));
+const { binLevels } = await import(join(outdir, 'viz-levels.js'));
 
 let failures = 0;
 function test(name, fn) {
@@ -414,6 +416,69 @@ test('tab-closed outranks playback state, which is idle by then', () => {
     badge({ readingTabId: null, activeTabId: 9, playerState: 'idle', stopReason: 'tab-closed' }),
     'stopped-tab-closed',
   );
+});
+
+// -- visualizer bin→bar mapping ---------------------------------------------
+// The analyser spans the AudioContext's Nyquist (24 kHz at a 48 kHz device
+// rate), but TTS audio is band-limited to its own Nyquist (11–12 kHz), so a
+// linear map leaves the right half of the bars permanently dead.
+
+const VIZ_CTX_RATE = 48000; // typical device rate; analyser spans 0–24 kHz
+const VIZ_FFT_BINS = 1024; // fftSize 2048
+const hzPerBin = VIZ_CTX_RATE / 2 / VIZ_FFT_BINS;
+
+/** Bins with flat energy below `cutoffHz` and silence above — the spectrum
+ *  of band-limited TTS audio after Chrome resamples it into the context. */
+function bandLimitedBins(cutoffHz) {
+  const bins = new Uint8Array(VIZ_FFT_BINS);
+  for (let i = 0; i < bins.length; i++) bins[i] = i * hzPerBin < cutoffHz ? 200 : 0;
+  return bins;
+}
+
+test('every bar moves for 24 kHz (Kokoro) audio in a 48 kHz context', () => {
+  const levels = binLevels(bandLimitedBins(12000), VIZ_CTX_RATE, 24);
+  assert.equal(levels.length, 24);
+  for (let b = 0; b < 24; b++) {
+    assert.ok(levels[b] > 0.1, `bar ${b} is dead (${levels[b]})`);
+  }
+});
+
+test('every bar moves for 22.05 kHz (Piper) audio too', () => {
+  const levels = binLevels(bandLimitedBins(11025), VIZ_CTX_RATE, 24);
+  for (let b = 0; b < 24; b++) {
+    assert.ok(levels[b] > 0.1, `bar ${b} is dead (${levels[b]})`);
+  }
+});
+
+test('silence maps to all-zero bars', () => {
+  const levels = binLevels(new Uint8Array(VIZ_FFT_BINS), VIZ_CTX_RATE, 24);
+  assert.ok(levels.every((v) => v === 0));
+});
+
+test('a low hum lights low bars, a 5 kHz tone lights high bars', () => {
+  const low = new Uint8Array(VIZ_FFT_BINS);
+  low[Math.round(120 / hzPerBin)] = 255; // ~120 Hz
+  const lowLevels = binLevels(low, VIZ_CTX_RATE, 24);
+  const lowPeak = lowLevels.indexOf(Math.max(...lowLevels));
+
+  const high = new Uint8Array(VIZ_FFT_BINS);
+  high[Math.round(5000 / hzPerBin)] = 255; // ~5 kHz
+  const highLevels = binLevels(high, VIZ_CTX_RATE, 24);
+  const highPeak = highLevels.indexOf(Math.max(...highLevels));
+
+  assert.ok(lowPeak < 6, `120 Hz peaked at bar ${lowPeak}`);
+  assert.ok(highPeak > 15, `5 kHz peaked at bar ${highPeak}`);
+  assert.ok(highLevels[0] === 0, 'tone leaked into the lowest bar');
+});
+
+test('bars read distinct bands — no wide plateaus of duplicated bins', () => {
+  // With a 2048-point FFT every bar's band starts at a different bin, so a
+  // regression to a coarse FFT (e.g. fftSize 128) would fail this.
+  const ramp = new Uint8Array(VIZ_FFT_BINS);
+  for (let i = 0; i < ramp.length; i++) ramp[i] = Math.min(255, i);
+  const levels = binLevels(ramp, VIZ_CTX_RATE, 24);
+  const distinct = new Set(levels.map((v) => v.toFixed(4))).size;
+  assert.ok(distinct >= 20, `only ${distinct} distinct bar levels`);
 });
 
 if (failures > 0) {

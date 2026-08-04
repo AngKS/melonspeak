@@ -14,6 +14,7 @@ import type {
   VizMessage,
 } from '../lib/messages';
 import { encodeWav, silentWav } from '../lib/wav';
+import { binLevels } from '../lib/viz-levels';
 import { MODELS } from '../engines/registry';
 import type { SynthesisResult, TTSEngine } from '../engines/types';
 import type { WorkerRequest, WorkerResponse } from './engine-worker';
@@ -515,7 +516,9 @@ function ensureAnalyser(): void {
   audioCtx = new AudioContext();
   const source = audioCtx.createMediaElementSource(audio);
   analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 128;
+  // 2048-point FFT: the log-spaced bars need fine bins at the low end —
+  // at fftSize 128 the bottom seven bars would all read the same bin.
+  analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.7;
   source.connect(analyser);
   analyser.connect(audioCtx.destination);
@@ -546,18 +549,10 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 function pushLevels(): void {
-  if (vizPorts.size === 0 || status.state !== 'speaking' || !analyser) return;
+  if (vizPorts.size === 0 || status.state !== 'speaking' || !analyser || !audioCtx) return;
   const bins = new Uint8Array(analyser.frequencyBinCount);
   analyser.getByteFrequencyData(bins);
-  const levels: number[] = new Array(VIZ_BARS);
-  const per = bins.length / VIZ_BARS;
-  for (let b = 0; b < VIZ_BARS; b++) {
-    let sum = 0;
-    const start = Math.floor(b * per);
-    const end = Math.floor((b + 1) * per);
-    for (let i = start; i < end; i++) sum += bins[i];
-    levels[b] = Math.min(1, sum / Math.max(1, end - start) / 255);
-  }
+  const levels = binLevels(bins, audioCtx.sampleRate, VIZ_BARS);
   const msg: VizMessage = { type: 'levels', levels };
   for (const p of vizPorts) p.postMessage(msg);
 }
