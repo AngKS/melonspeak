@@ -187,6 +187,168 @@ if (closed.eyebrow !== 'STOPPED') errors.push(`eyebrow should read STOPPED, got 
 
 await swWorker.evaluate(() => chrome.storage.session.remove('readingTab'));
 
+// -- Spacebar transport ------------------------------------------------------
+// The key wiring is DOM-bound, so unit tests can't reach it. Watch the command
+// cross the real runtime channel instead: record player-cmd in the worker,
+// drive a status in, press the key, read back what arrived.
+await swWorker.evaluate(() => {
+  globalThis.__cmds = [];
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.target === 'background' && msg.type === 'player-cmd') globalThis.__cmds.push(msg.cmd.type);
+  });
+});
+
+await reader.bringToFront();
+
+/** Put the view in `state`, focus `selector` (or nothing), tap space, and
+ *  return the commands the background saw. */
+async function spaceWith(state, selector = null) {
+  await swWorker.evaluate(
+    (s) =>
+      chrome.runtime.sendMessage({
+        target: 'ui',
+        type: 'status',
+        status: { state: s, modelId: null },
+      }),
+    state,
+  );
+  await new Promise((r) => setTimeout(r, 300));
+  await swWorker.evaluate(() => {
+    globalThis.__cmds = [];
+  });
+  await reader.evaluate((sel) => {
+    document.activeElement?.blur?.();
+    if (sel) document.querySelector(sel)?.focus();
+  }, selector);
+  await reader.keyboard.press('Space');
+  await new Promise((r) => setTimeout(r, 400));
+  return swWorker.evaluate(() => globalThis.__cmds);
+}
+
+const spaceSpeaking = await spaceWith('speaking');
+console.log('space while speaking:', spaceSpeaking);
+if (!spaceSpeaking.includes('pause')) {
+  errors.push(`space while speaking should pause, got ${JSON.stringify(spaceSpeaking)}`);
+}
+
+const spacePaused = await spaceWith('paused');
+console.log('space while paused:', spacePaused);
+if (!spacePaused.includes('resume')) {
+  errors.push(`space while paused should resume, got ${JSON.stringify(spacePaused)}`);
+}
+
+// A focused control keeps the key the browser already gave it.
+const spaceOnStop = await spaceWith('speaking', '#stop');
+console.log('space with Stop focused:', spaceOnStop);
+if (!spaceOnStop.includes('stop')) {
+  errors.push(`space on a focused Stop should stop, got ${JSON.stringify(spaceOnStop)}`);
+}
+if (spaceOnStop.includes('pause')) {
+  errors.push('space must not pause when a control owns the key');
+}
+
+// Nothing playing → the key is left alone entirely.
+const spaceIdle = await spaceWith('idle');
+console.log('space while idle:', spaceIdle);
+if (spaceIdle.length > 0) {
+  errors.push(`space while idle should send nothing, got ${JSON.stringify(spaceIdle)}`);
+}
+
+// Clicking Pause focuses it, then the status change hides it. Space must still
+// resume — this is the ordinary mouse-then-keyboard path.
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'speaking', modelId: null },
+  }),
+);
+await new Promise((r) => setTimeout(r, 300));
+await reader.click('#pause');
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'paused', modelId: null },
+  }),
+);
+await new Promise((r) => setTimeout(r, 300));
+await swWorker.evaluate(() => {
+  globalThis.__cmds = [];
+});
+await reader.keyboard.press('Space');
+await new Promise((r) => setTimeout(r, 400));
+const afterClickPause = await swWorker.evaluate(() => globalThis.__cmds);
+console.log('space after clicking Pause:', afterClickPause);
+if (!afterClickPause.includes('resume')) {
+  errors.push(`space after clicking Pause should resume, got ${JSON.stringify(afterClickPause)}`);
+}
+
+// -- Scroll idle → return to the line being read -----------------------------
+// The regression this guards: the centring scroll used to live inside
+// setActiveLine, which early-returns on an unchanged index, so scrolling away
+// mid-chunk stranded the view until the player crossed a chunk boundary.
+await reader.setViewport({ width: 420, height: 700 });
+const lyricsTop = () => reader.evaluate(() => document.getElementById('lyrics').scrollTop);
+
+const setReadingState = (state, chunkIndex) =>
+  swWorker.evaluate(
+    (s, i) =>
+      chrome.runtime.sendMessage({
+        target: 'ui',
+        type: 'status',
+        status: { state: s, modelId: null, chunkIndex: i, chunkCount: 60 },
+      }),
+    state,
+    chunkIndex,
+  );
+
+await swWorker.evaluate(
+  (chunks) =>
+    chrome.runtime.sendMessage({
+      target: 'ui',
+      type: 'transcript',
+      chunks,
+      title: 'Scroll follow test',
+    }),
+  Array.from({ length: 60 }, (_, i) => `Transcript line number ${i}, long enough to wrap a little.`),
+);
+await setReadingState('speaking', 30);
+await new Promise((r) => setTimeout(r, 1500));
+const centred = await lyricsTop();
+console.log('scroll centred on the active line:', centred);
+if (centred <= 0) errors.push(`expected the active line to be scrolled into view, got ${centred}`);
+
+// Scroll away without touching the active index — same event a scrollbar drag
+// or PageDown produces.
+await reader.evaluate(() => {
+  document.getElementById('lyrics').scrollTop = 0;
+});
+await new Promise((r) => setTimeout(r, 500));
+const scrolledAway = await lyricsTop();
+if (scrolledAway > 20) errors.push(`expected the view to stay scrolled away, got ${scrolledAway}`);
+
+// FOLLOW_RESUME_MS is 6s; allow the smooth scroll to land.
+await new Promise((r) => setTimeout(r, 7500));
+const returned = await lyricsTop();
+console.log('scroll after 6s idle:', returned);
+if (Math.abs(returned - centred) > 40) {
+  errors.push(`expected a return to ~${centred} after idle, got ${returned}`);
+}
+
+// A finished read must not yank you back — scrolling it is how you re-read.
+await setReadingState('idle', 30);
+await new Promise((r) => setTimeout(r, 300));
+await reader.evaluate(() => {
+  document.getElementById('lyrics').scrollTop = 0;
+});
+await new Promise((r) => setTimeout(r, 7500));
+const idleScroll = await lyricsTop();
+console.log('scroll after 6s idle on a finished read:', idleScroll);
+if (idleScroll > 20) {
+  errors.push(`a finished read must not scroll itself back, got ${idleScroll}`);
+}
+
 if (DO_DOWNLOAD) {
   console.log('\n--- e2e: downloading ${MODEL} and synthesizing ---');
   // Track player status broadcasts from the onboarding page.

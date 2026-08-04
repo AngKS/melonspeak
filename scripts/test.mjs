@@ -13,6 +13,7 @@ await esbuild.build({
     'supertonic-text': 'src/engines/supertonic-text.ts',
     'tts-normalize': 'src/lib/tts-normalize.ts',
     'reading-tab': 'src/lib/reading-tab.ts',
+    'reader-controls': 'src/lib/reader-controls.ts',
     settings: 'src/lib/settings.ts',
   },
   bundle: true,
@@ -24,6 +25,9 @@ const { normalizeForTTS, expandForSpeech } = await import(join(outdir, 'tts-norm
 const { serializeReadable } = await import(join(outdir, 'readable-text.js'));
 const { preprocessText, textToIds } = await import(join(outdir, 'supertonic-text.js'));
 const { computeBadge } = await import(join(outdir, 'reading-tab.js'));
+const { resolveSpaceAction, shouldFollowActiveLine } = await import(
+  join(outdir, 'reader-controls.js')
+);
 const settingsMod = await import(join(outdir, 'settings.js'));
 
 let failures = 0;
@@ -414,6 +418,43 @@ test('tab-closed outranks playback state, which is idle by then', () => {
     badge({ readingTabId: null, activeTabId: 9, playerState: 'idle', stopReason: 'tab-closed' }),
     'stopped-tab-closed',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Reader controls: spacebar action + follow-the-active-line gate
+// ---------------------------------------------------------------------------
+
+const ALL_STATES = ['idle', 'preparing', 'loading-model', 'speaking', 'paused', 'error'];
+
+const space = (playerState, focusIsInteractive = false) =>
+  resolveSpaceAction({ playerState, focusIsInteractive });
+
+test('space pauses a speaking read and resumes a paused one', () => {
+  assert.equal(space('speaking'), 'pause');
+  assert.equal(space('paused'), 'resume');
+});
+
+test('space does nothing in states with no playback to toggle', () => {
+  for (const state of ['idle', 'preparing', 'loading-model', 'error']) {
+    assert.equal(space(state), 'none', state);
+  }
+});
+
+// Otherwise Stop, Voice model, and the backgrounded header would lose the key
+// the browser already gives them.
+test('a focused button keeps space for itself in every state', () => {
+  for (const state of ALL_STATES) {
+    assert.equal(space(state, true), 'none', state);
+  }
+});
+
+test('the transcript follows the active line only while a read is live', () => {
+  for (const state of ['speaking', 'paused', 'preparing']) {
+    assert.equal(shouldFollowActiveLine(state), true, state);
+  }
+  for (const state of ['idle', 'loading-model', 'error']) {
+    assert.equal(shouldFollowActiveLine(state), false, state);
+  }
 });
 
 if (failures > 0) {
