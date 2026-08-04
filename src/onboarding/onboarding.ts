@@ -68,6 +68,11 @@ function buildCard(id: ModelId): HTMLElement {
   card.querySelector<HTMLButtonElement>('.try')!.addEventListener('click', (e) => {
     e.preventDefault();
     openSidebar(); // synchronously, while this click's gesture is live
+    // The sample belongs to no tab: drop any stale one so the reading view
+    // doesn't offer a way "back" to a page it isn't reading.
+    void chrome.runtime
+      .sendMessage({ target: 'background', type: 'clear-reading-tab' } satisfies Message)
+      .catch(() => {});
     sendPlayerCmd({ type: 'speak', text: SAMPLE_TEXT, title: 'Sample', modelId: id });
   });
   card.querySelector<HTMLButtonElement>('.remove')!.addEventListener('click', (e) => {

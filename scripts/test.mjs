@@ -12,6 +12,7 @@ await esbuild.build({
     'readable-text': 'src/lib/readable-text.ts',
     'supertonic-text': 'src/engines/supertonic-text.ts',
     'tts-normalize': 'src/lib/tts-normalize.ts',
+    'reading-tab': 'src/lib/reading-tab.ts',
     settings: 'src/lib/settings.ts',
   },
   bundle: true,
@@ -22,6 +23,7 @@ const { chunkText } = await import(join(outdir, 'chunker.js'));
 const { normalizeForTTS, expandForSpeech } = await import(join(outdir, 'tts-normalize.js'));
 const { serializeReadable } = await import(join(outdir, 'readable-text.js'));
 const { preprocessText, textToIds } = await import(join(outdir, 'supertonic-text.js'));
+const { computeBadge } = await import(join(outdir, 'reading-tab.js'));
 const settingsMod = await import(join(outdir, 'settings.js'));
 
 let failures = 0;
@@ -370,6 +372,48 @@ await testAsync('mutateSettings merges defaults and returns the result', async (
   const next = await mutateSettings(() => ({ speed: 1.5 }));
   assert.equal(next.speed, 1.5);
   assert.equal(next.onboarded, false);
+});
+
+// -- reading-tab badge ------------------------------------------------------
+
+const badge = (over) =>
+  computeBadge({
+    readingTabId: 7,
+    activeTabId: 7,
+    playerState: 'speaking',
+    stopReason: null,
+    ...over,
+  });
+
+test('no badge while the tab being read is the active tab', () => {
+  assert.equal(badge({}), 'none');
+});
+
+test('badge appears once another tab is active', () => {
+  assert.equal(badge({ activeTabId: 9 }), 'background');
+});
+
+test('badge covers paused and preparing, not just speaking', () => {
+  assert.equal(badge({ activeTabId: 9, playerState: 'paused' }), 'background');
+  assert.equal(badge({ activeTabId: 9, playerState: 'preparing' }), 'background');
+});
+
+test('a finished or idle read is not "backgrounded"', () => {
+  for (const playerState of ['idle', 'loading-model', 'error']) {
+    assert.equal(badge({ activeTabId: 9, playerState }), 'none', playerState);
+  }
+});
+
+test('unknown reading or active tab shows nothing rather than guessing', () => {
+  assert.equal(badge({ readingTabId: null, activeTabId: 9 }), 'none');
+  assert.equal(badge({ activeTabId: null }), 'none');
+});
+
+test('tab-closed outranks playback state, which is idle by then', () => {
+  assert.equal(
+    badge({ readingTabId: null, activeTabId: 9, playerState: 'idle', stopReason: 'tab-closed' }),
+    'stopped-tab-closed',
+  );
 });
 
 if (failures > 0) {

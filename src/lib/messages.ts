@@ -52,6 +52,8 @@ export type Message =
   | { target: 'background'; type: 'read-page' }
   | { target: 'background'; type: 'read-selection' }
   | { target: 'background'; type: 'player-cmd'; cmd: PlayerCommand }
+  /** Onboarding's sample belongs to no tab; it must drop a stale one. */
+  | { target: 'background'; type: 'clear-reading-tab' }
   | { target: 'ui'; type: 'status'; status: PlayerStatus }
   | { target: 'ui'; type: 'download-progress'; progress: DownloadProgress }
   | { target: 'ui'; type: 'transcript'; chunks: string[]; title?: string }
