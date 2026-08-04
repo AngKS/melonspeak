@@ -4,6 +4,7 @@ import { VIZ_PORT } from '../lib/messages';
 import type { Message, ModelId, PlayerCommand, PlayerStatus, VizMessage } from '../lib/messages';
 import type { ReadingTabState } from '../lib/reading-tab';
 import { READING_TAB_KEY, computeBadge } from '../lib/reading-tab';
+import { resolveSpaceAction, shouldFollowActiveLine } from '../lib/reader-controls';
 import { getSettings, mutateSettings, onSettingsChanged } from '../lib/settings';
 import { MODELS, MODEL_IDS } from '../engines/registry';
 
@@ -41,6 +42,25 @@ function sendPlayerCmd(cmd: PlayerCommand): void {
 document.getElementById('pause')!.addEventListener('click', () => sendPlayerCmd({ type: 'pause' }));
 document.getElementById('resume')!.addEventListener('click', () => sendPlayerCmd({ type: 'resume' }));
 document.getElementById('stop')!.addEventListener('click', () => sendPlayerCmd({ type: 'stop' }));
+
+/** Elements the browser already activates with space. The header is covered
+ *  through role=button, which renderBadge() adds only while it is actionable. */
+const INTERACTIVE_SELECTOR = 'button, [role="button"], a, input, select, textarea';
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== ' ' || e.repeat) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  const focused = document.activeElement;
+  const action = resolveSpaceAction({
+    playerState: lastStatus?.state ?? 'idle',
+    focusIsInteractive: focused instanceof Element && focused.closest(INTERACTIVE_SELECTOR) !== null,
+  });
+  // Nothing to toggle: leave the event alone so space still scrolls, and so a
+  // focused control keeps its own activation.
+  if (action === 'none') return;
+  e.preventDefault();
+  sendPlayerCmd({ type: action });
+});
 
 // -- Reading tab: backgrounded badge + click-to-return -----------------------
 // Display only. Stopping the read when that tab closes is the background's
@@ -210,21 +230,47 @@ function setActiveLine(index: number): void {
         ? 'line active'
         : `line ${d < 0 ? 'past' : ''} ${Math.abs(d) <= 3 ? 'near' : ''}`.trim();
   }
-  const line = lines[index];
-  if (line && Date.now() > userScrollUntil) {
-    lyricsEl.scrollTo({
-      top: line.offsetTop - lyricsEl.clientHeight / 2 + line.clientHeight / 2,
-      behavior: 'smooth',
-    });
-  }
+  if (Date.now() > userScrollUntil) scrollActiveLineIntoView();
 }
 
-// Pause auto-scroll for a few seconds when the user scrolls on their own.
-for (const evt of ['wheel', 'touchmove'] as const) {
-  lyricsEl.addEventListener(evt, () => {
-    userScrollUntil = Date.now() + 4000;
-  }, { passive: true });
+/** How long the user's own scrolling holds auto-scroll off — and, once they
+ *  settle, how long before the view returns to the line being read. */
+const FOLLOW_RESUME_MS = 6000;
+/** A smooth scroll emits scroll events for a while after it is asked for.
+ *  Ignore them, or the view mistakes its own movement for the user's. */
+const PROGRAMMATIC_SCROLL_MS = 800;
+
+let programmaticScrollUntil = 0;
+let followTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Centre the active line. Separate from setActiveLine because the view must
+ *  also be able to come back to a line that has not changed — on a long chunk,
+ *  or while paused, there is no next index to ride back on. */
+function scrollActiveLineIntoView(): void {
+  const line = lines[activeIndex];
+  if (!line) return;
+  programmaticScrollUntil = Date.now() + PROGRAMMATIC_SCROLL_MS;
+  lyricsEl.scrollTo({
+    top: line.offsetTop - lyricsEl.clientHeight / 2 + line.clientHeight / 2,
+    behavior: 'smooth',
+  });
 }
+
+// Any scroll of the transcript counts — wheel, touch, scrollbar drag, or the
+// keyboard — so every one of them gets the same hands-off window and the same
+// return to the line being read once the user settles.
+lyricsEl.addEventListener(
+  'scroll',
+  () => {
+    if (Date.now() < programmaticScrollUntil) return;
+    userScrollUntil = Date.now() + FOLLOW_RESUME_MS;
+    clearTimeout(followTimer);
+    followTimer = setTimeout(() => {
+      if (shouldFollowActiveLine(lastStatus?.state ?? 'idle')) scrollActiveLineIntoView();
+    }, FOLLOW_RESUME_MS);
+  },
+  { passive: true },
+);
 
 /** Click a line: jump an active read there, or restart a finished read
  *  from that line. */
