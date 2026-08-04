@@ -17,6 +17,7 @@ await esbuild.build({
     'reader-controls': 'src/lib/reader-controls.ts',
     settings: 'src/lib/settings.ts',
     'viz-levels': 'src/lib/viz-levels.ts',
+    accel: 'src/engines/accel.ts',
   },
   bundle: true,
   format: 'esm',
@@ -33,6 +34,7 @@ const { resolveSpaceAction, shouldFollowActiveLine } = await import(
 );
 const settingsMod = await import(join(outdir, 'settings.js'));
 const { binLevels } = await import(join(outdir, 'viz-levels.js'));
+const { wasmThreads, webgpuAvailable } = await import(join(outdir, 'accel.js'));
 
 let failures = 0;
 function test(name, fn) {
@@ -506,6 +508,34 @@ test('tab-closed outranks playback state, which is idle by then', () => {
     badge({ readingTabId: null, activeTabId: 9, playerState: 'idle', stopReason: 'tab-closed' }),
     'stopped-tab-closed',
   );
+});
+
+// -- acceleration gating ----------------------------------------------------
+// Threads must engage only when BOTH the beta toggle and cross-origin
+// isolation are present; everything else silently stays at 1.
+
+test('accel off means one thread, isolated or not', () => {
+  delete globalThis.crossOriginIsolated;
+  assert.equal(wasmThreads(false), 1);
+  globalThis.crossOriginIsolated = true;
+  assert.equal(wasmThreads(false), 1);
+  delete globalThis.crossOriginIsolated;
+});
+
+test('accel without isolation stays at one thread (Firefox path)', () => {
+  delete globalThis.crossOriginIsolated;
+  assert.equal(wasmThreads(true), 1);
+});
+
+test('accel with isolation uses cores-1 capped at 4', () => {
+  globalThis.crossOriginIsolated = true;
+  const cores = navigator.hardwareConcurrency ?? 2;
+  assert.equal(wasmThreads(true), Math.min(4, Math.max(1, cores - 1)));
+  delete globalThis.crossOriginIsolated;
+});
+
+await testAsync('webgpuAvailable is false (not a crash) with no adapter', async () => {
+  assert.equal(await webgpuAvailable(), false); // node has no navigator.gpu
 });
 
 // -- visualizer bin→bar mapping ---------------------------------------------

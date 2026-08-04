@@ -1,5 +1,5 @@
 import type { Message, ModelId, PlayerCommand } from '../lib/messages';
-import { getSettings } from '../lib/settings';
+import { getSettings, updateSettings } from '../lib/settings';
 import { openSidebar, primeSidebar } from '../lib/sidebar';
 
 primeSidebar();
@@ -251,10 +251,18 @@ async function refreshInstalled(): Promise<void> {
   if (stale) reportInstalled(installed);
 }
 
+// The beta acceleration toggle. The background watches this flag and rebuilds
+// the engine when it flips; this page only persists the choice.
+const accelToggle = document.getElementById('accel-toggle') as HTMLInputElement;
+accelToggle.addEventListener('change', () => {
+  void updateSettings({ accelBeta: accelToggle.checked });
+});
+
 async function init(): Promise<void> {
   for (const id of MODEL_IDS) cardsEl.append(buildCard(id));
   cardsEl.addEventListener('change', updateDownloadButton);
   updateDownloadButton();
+  accelToggle.checked = (await getSettings()).accelBeta;
   await refreshInstalled();
   // Pick up any download already running in the player context.
   sendPlayerCmd({ type: 'get-status' });

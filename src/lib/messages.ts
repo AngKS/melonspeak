@@ -35,11 +35,20 @@ export interface DownloadProgress {
 // access, so 'speak' arrives pre-enriched by the background script with the
 // resolved model/voice/speed from settings.
 export type PlayerCommand =
-  | { type: 'speak'; text: string; title?: string; modelId?: ModelId; voice?: string; speed?: number }
+  | {
+      type: 'speak';
+      text: string;
+      title?: string;
+      modelId?: ModelId;
+      voice?: string;
+      speed?: number;
+      /** Beta hardware acceleration (threads/WebGPU); enriched from settings. */
+      accel?: boolean;
+    }
   /** Warm-up sent while extraction is still running: spins up the player
    *  context and loads the model so the following 'speak' finds both ready.
    *  The background enriches it with the selected model, like 'speak'. */
-  | { type: 'prepare'; modelId?: ModelId }
+  | { type: 'prepare'; modelId?: ModelId; accel?: boolean }
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'stop' }

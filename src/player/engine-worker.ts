@@ -11,7 +11,7 @@ import type { TTSEngine } from '../engines/types';
 import type { ModelId } from '../lib/messages';
 
 export type WorkerRequest =
-  | { type: 'load'; modelId: ModelId }
+  | { type: 'load'; modelId: ModelId; accel?: boolean }
   | { type: 'synthesize'; id: number; text: string; voice?: string }
   | { type: 'download'; modelId: ModelId };
 
@@ -37,7 +37,10 @@ async function handle(req: WorkerRequest): Promise<void> {
     switch (req.type) {
       case 'load': {
         const mod = await loadEngineModule(req.modelId);
-        engine = await mod.createEngine((detail) => scope.postMessage({ type: 'load-progress', detail }));
+        engine = await mod.createEngine(
+          (detail) => scope.postMessage({ type: 'load-progress', detail }),
+          { accel: req.accel ?? false },
+        );
         scope.postMessage({ type: 'loaded' });
         break;
       }

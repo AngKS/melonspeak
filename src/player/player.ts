@@ -33,11 +33,15 @@ const IDLE_UNLOAD_MS = 5 * 60 * 1000;
 
 let engine: TTSEngine | null = null;
 let engineId: ModelId | null = null;
+/** Acceleration mode the loaded engine was built with; part of the cache key
+ *  so flipping the beta toggle reloads instead of reusing the wrong build. */
+let engineAccel = false;
 /** In-flight engine load, shared so a 'prepare' fired during page extraction
  *  and the 'speak' that follows it await one load instead of racing two
  *  workers for the same model. */
 let engineLoad: {
   modelId: ModelId;
+  accel: boolean;
   promise: Promise<TTSEngine>;
   onProgress: (detail: string) => void;
 } | null = null;
@@ -75,7 +79,7 @@ async function handleCommand(cmd: PlayerCommand): Promise<void> {
   switch (cmd.type) {
     case 'speak':
       if (cmd.speed) speed = cmd.speed;
-      await speak(cmd.text, cmd.title, cmd.modelId, cmd.voice);
+      await speak(cmd.text, cmd.title, cmd.modelId, cmd.voice, cmd.accel ?? false);
       break;
     case 'set-speed':
       speed = cmd.speed;
@@ -85,7 +89,7 @@ async function handleCommand(cmd: PlayerCommand): Promise<void> {
       wakeSynthesis?.();
       break;
     case 'prepare':
-      if (cmd.modelId) await prepare(cmd.modelId);
+      if (cmd.modelId) await prepare(cmd.modelId, cmd.accel ?? false);
       break;
     case 'set-voice':
       // Applies to chunks not yet synthesized; a stopped read is not the
@@ -166,15 +170,16 @@ function abandonEngineLoad(): void {
  *  this one meanwhile — callers detect that via their session check). */
 async function ensureEngine(
   modelId: ModelId,
+  accel: boolean,
   onProgress: (detail: string) => void,
 ): Promise<TTSEngine> {
-  if (engine && engineId === modelId) return engine;
-  if (engineLoad?.modelId !== modelId) {
+  if (engine && engineId === modelId && engineAccel === accel) return engine;
+  if (engineLoad?.modelId !== modelId || engineLoad.accel !== accel) {
     abandonEngineLoad();
     // Free the old model before loading the new one to keep peak memory low.
     disposeEngine();
-    const fresh = { modelId, onProgress } as NonNullable<typeof engineLoad>;
-    fresh.promise = createWorkerEngine(modelId, (detail) => fresh.onProgress(detail));
+    const fresh = { modelId, accel, onProgress } as NonNullable<typeof engineLoad>;
+    fresh.promise = createWorkerEngine(modelId, accel, (detail) => fresh.onProgress(detail));
     engineLoad = fresh;
   }
   const load = engineLoad;
@@ -185,6 +190,7 @@ async function ensureEngine(
       engineLoad = null;
       engine = eng;
       engineId = modelId;
+      engineAccel = accel;
     }
     return eng;
   } catch (err) {
@@ -195,16 +201,16 @@ async function ensureEngine(
 
 /** Warm-up for a read that is still being extracted: loads the model so the
  *  following 'speak' finds it ready. Never touches an active read. */
-async function prepare(modelId: ModelId): Promise<void> {
+async function prepare(modelId: ModelId, accel: boolean): Promise<void> {
   if (status.state !== 'idle' && status.state !== 'error') return;
-  if (engine && engineId === modelId) return;
+  if (engine && engineId === modelId && engineAccel === accel) return;
   // Any command that could interfere (speak, stop, model-changed) bumps the
   // session, so `session === my` means this prepare still owns the status.
   const my = session;
   const meta = MODELS[modelId];
   setStatus({ state: 'loading-model', modelId, detail: `Loading ${meta.displayName}…` });
   try {
-    await ensureEngine(modelId, (detail) => {
+    await ensureEngine(modelId, accel, (detail) => {
       if (session === my) setStatus({ state: 'loading-model', modelId, detail });
     });
   } catch {
@@ -235,6 +241,7 @@ async function speak(
   title?: string,
   modelId?: ModelId,
   voiceOverride?: string,
+  accel = false,
 ): Promise<void> {
   const my = ++session;
   audio.pause();
@@ -261,10 +268,10 @@ async function speak(
 
   let eng: TTSEngine;
   try {
-    if (!engine || engineId !== modelId) {
+    if (!engine || engineId !== modelId || engineAccel !== accel) {
       setStatus({ state: 'loading-model', modelId, detail: `Loading ${meta.displayName}…`, title });
     }
-    eng = await ensureEngine(modelId, (detail) => {
+    eng = await ensureEngine(modelId, accel, (detail) => {
       if (session === my) setStatus({ state: 'loading-model', modelId, detail, title });
     });
     if (session !== my) return;
@@ -478,6 +485,7 @@ function spawnEngineWorker(): Worker {
 
 function createWorkerEngine(
   modelId: ModelId,
+  accel: boolean,
   onProgress: (detail: string) => void,
 ): Promise<TTSEngine> {
   const worker = spawnEngineWorker();
@@ -539,7 +547,7 @@ function createWorkerEngine(
         }
       }
     };
-    worker.postMessage({ type: 'load', modelId } satisfies WorkerRequest);
+    worker.postMessage({ type: 'load', modelId, accel } satisfies WorkerRequest);
   });
 }
 

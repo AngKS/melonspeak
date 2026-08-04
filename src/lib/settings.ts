@@ -10,6 +10,10 @@ export interface Settings {
   /** Playback speed, 0.5–2.0 (pitch-preserving) */
   speed: number;
   onboarded: boolean;
+  /** Beta: hardware acceleration (multithreaded WASM / WebGPU) for synthesis.
+   *  Off by default; engines feature-detect and fall back to the plain WASM
+   *  path at runtime, so enabling this can never break playback outright. */
+  accelBeta: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -18,6 +22,7 @@ const DEFAULTS: Settings = {
   voices: {},
   speed: 1,
   onboarded: false,
+  accelBeta: false,
 };
 
 export async function getSettings(): Promise<Settings> {

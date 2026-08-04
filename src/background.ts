@@ -98,6 +98,18 @@ function handleUiMessage(msg: Message): void {
   }
 }
 
+// Flipping the acceleration beta must rebuild the engine: the player caches
+// engines per (model, accel mode), and a live read keeps speaking with the
+// old engine forever otherwise. model-changed stops the read and frees it.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes['settings']) return;
+  const oldAccel = (changes['settings'].oldValue as { accelBeta?: boolean } | undefined)?.accelBeta;
+  const newAccel = (changes['settings'].newValue as { accelBeta?: boolean } | undefined)?.accelBeta;
+  if ((oldAccel ?? false) !== (newAccel ?? false)) {
+    void deliverToPlayer({ type: 'model-changed' });
+  }
+});
+
 void chrome.action?.setBadgeBackgroundColor?.({ color: '#e04a5c' });
 (globalThis as { __melonBroadcastLocal?: (m: Message) => void }).__melonBroadcastLocal =
   handleUiMessage;
@@ -214,11 +226,17 @@ async function deliverToPlayer(cmd: PlayerCommand): Promise<void> {
       errorStatus('No voice model installed yet — open MelonSpeak setup first.');
       return;
     }
-    cmd = { ...cmd, modelId, voice: cmd.voice ?? s.voices[modelId], speed: s.speed };
+    cmd = {
+      ...cmd,
+      modelId,
+      voice: cmd.voice ?? s.voices[modelId],
+      speed: s.speed,
+      accel: s.accelBeta,
+    };
   } else if (cmd.type === 'prepare') {
     const s = await getSettings();
     if (!s.selectedModel) return; // the 'speak' that follows surfaces the error
-    cmd = { ...cmd, modelId: s.selectedModel };
+    cmd = { ...cmd, modelId: s.selectedModel, accel: s.accelBeta };
   }
   if (!IS_CHROME_OFFSCREEN) {
     deliverLocal(cmd);
