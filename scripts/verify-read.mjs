@@ -104,23 +104,27 @@ await reader.screenshot({ path: join(OUT, 'reader-live.png') });
 const lyricsState = await reader.evaluate(() => ({
   lines: document.querySelectorAll('.line').length,
   active: document.querySelector('.line.active')?.textContent?.slice(0, 60) ?? null,
-  transportVisible: !document.getElementById('transport').hidden,
+  transportVisible: !document.getElementById('reading-actions').hidden,
 }));
 console.log('reader state:', JSON.stringify(lyricsState));
 if (lyricsState.lines === 0) errors.push('reader shows no transcript lines');
 if (!lyricsState.active) errors.push('reader has no active line');
+if (!lyricsState.transportVisible) errors.push('reader transport not visible while speaking');
 
-// Popup mid-read shows transport.
-const popup = await browser.newPage();
-await popup.goto(`chrome-extension://${extId}/popup/popup.html`, { waitUntil: 'networkidle0' });
-await new Promise((r) => setTimeout(r, 800));
-await popup.screenshot({ path: join(OUT, 'popup-live.png') });
-const popupState = await popup.evaluate(() => ({
-  activeVisible: !document.getElementById('active').hidden,
-  nowReading: document.getElementById('now-reading')?.textContent,
+// A panel opened mid-read must catch up to the read already in progress —
+// this is what the popup used to prove, and the panel is the only surface now.
+const late = await browser.newPage();
+await late.goto(`chrome-extension://${extId}/reader/reader.html`, { waitUntil: 'networkidle0' });
+await new Promise((r) => setTimeout(r, 1500));
+await late.screenshot({ path: join(OUT, 'panel-live.png') });
+const lateState = await late.evaluate(() => ({
+  transportVisible: !document.getElementById('reading-actions').hidden,
+  title: document.getElementById('title')?.textContent,
+  lines: document.querySelectorAll('.line').length,
 }));
-console.log('popup state:', JSON.stringify(popupState));
-if (!popupState.activeVisible) errors.push('popup transport not visible while speaking');
+console.log('late panel state:', JSON.stringify(lateState));
+if (!lateState.transportVisible) errors.push('panel opened mid-read shows no transport');
+if (!lateState.lines) errors.push('panel opened mid-read shows no transcript');
 
 // A preparing status must have been broadcast before speaking started.
 const sawPreparing = await monitor.evaluate(() =>

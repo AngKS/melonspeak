@@ -53,8 +53,10 @@ export type PlayerCommand =
 
 export type Message =
   | { target: 'player'; cmd: PlayerCommand }
-  | { target: 'background'; type: 'read-page' }
-  | { target: 'background'; type: 'read-selection' }
+  // tabId is the reading panel naming the page it is looking at; without it
+  // the background falls back to the active tab of the last focused window.
+  | { target: 'background'; type: 'read-page'; tabId?: number }
+  | { target: 'background'; type: 'read-selection'; tabId?: number }
   | { target: 'background'; type: 'player-cmd'; cmd: PlayerCommand }
   /** A UI page checked which models are really on disk (engines/model-storage).
    *  The background owns the downloaded flags, so it reconciles settings. */

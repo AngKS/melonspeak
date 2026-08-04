@@ -4,13 +4,26 @@ import { VIZ_PORT } from '../lib/messages';
 import type { Message, ModelId, PlayerCommand, PlayerStatus, VizMessage } from '../lib/messages';
 import type { ReadingTabState } from '../lib/reading-tab';
 import { READING_TAB_KEY, computeBadge } from '../lib/reading-tab';
-import { resolveSpaceAction, shouldFollowActiveLine } from '../lib/reader-controls';
+import {
+  resolveReadTarget,
+  resolveSpaceAction,
+  shouldFollowActiveLine,
+} from '../lib/reader-controls';
+import type { Settings } from '../lib/settings';
 import { getSettings, mutateSettings, onSettingsChanged } from '../lib/settings';
-import { MODELS, MODEL_IDS } from '../engines/registry';
+import { MODEL_IDS } from '../engines/registry';
+import { installedModels } from '../engines/model-storage';
+import { initReadActions } from './read-actions';
+import { initSettingsMenu } from './settings-menu';
+
+// The fallback surface pins its own size; see reader.css. Nothing else in the
+// page branches on where it is rendered.
+if (new URLSearchParams(location.search).get('surface') === 'popup') {
+  document.documentElement.classList.add('as-popup');
+}
 
 const lyricsEl = document.getElementById('lyrics') as HTMLElement;
 const emptyEl = document.getElementById('empty') as HTMLElement;
-const transportEl = document.getElementById('transport') as HTMLElement;
 const titleEl = document.getElementById('title') as HTMLElement;
 const eyebrowEl = document.getElementById('eyebrow') as HTMLElement;
 const headEl = document.getElementById('head') as HTMLElement;
@@ -30,6 +43,10 @@ let lastStatus: PlayerStatus | null = null;
 let readingTabId: number | null = null;
 /** Active tab of *this* view's window. Null in a context without one. */
 let activeTabId: number | null = null;
+/** This view's own tab, set only when it is rendered as a tab. A panel and a
+ *  popup have no tab of their own, which is what makes the active tab theirs
+ *  to read. */
+let myTabId: number | null = null;
 let myWindowId: number | null = null;
 /** Set when the background ended the read because the tab closed. */
 let stopReason: 'tab-closed' | null = null;
@@ -39,9 +56,29 @@ function sendPlayerCmd(cmd: PlayerCommand): void {
     .sendMessage({ target: 'background', type: 'player-cmd', cmd } satisfies Message)
     .catch(() => {});
 }
-document.getElementById('pause')!.addEventListener('click', () => sendPlayerCmd({ type: 'pause' }));
-document.getElementById('resume')!.addEventListener('click', () => sendPlayerCmd({ type: 'resume' }));
-document.getElementById('stop')!.addEventListener('click', () => sendPlayerCmd({ type: 'stop' }));
+
+function openOnboarding(): void {
+  void chrome.tabs.create({ url: chrome.runtime.getURL('onboarding/onboarding.html') });
+}
+
+/** Models verified present on disk. Drives both the footer mode and the ☰
+ *  model list, so neither can offer a voice that cannot speak a word. */
+let installedIds: ModelId[] = [];
+
+const readActions = initReadActions({
+  sendPlayerCmd,
+  openOnboarding,
+  readTargetTabId: () => resolveReadTarget({ activeTabId, ownTabId: myTabId }),
+});
+const settingsMenu = initSettingsMenu({
+  sendPlayerCmd,
+  openOnboarding,
+  onModelChosen: (id) => void chooseModel(id),
+});
+
+function renderFooter(): void {
+  readActions.update(lastStatus?.state ?? 'idle', installedIds.length > 0);
+}
 
 /** Elements the browser already activates with space. The header is covered
  *  through role=button, which renderBadge() adds only while it is actionable. */
@@ -153,6 +190,12 @@ async function loadReadingTab(): Promise<void> {
 }
 
 async function initTabTracking(): Promise<void> {
+  try {
+    const self = await chrome.tabs.getCurrent();
+    myTabId = self?.id ?? null;
+  } catch {
+    // Not a tab (panel or popup), which is the common case.
+  }
   try {
     const win = await chrome.windows.getCurrent();
     myWindowId = win.id ?? null;
@@ -292,10 +335,7 @@ function jumpToLine(index: number): void {
 
 function renderStatus(s: PlayerStatus): void {
   lastStatus = s;
-  const active = s.state === 'speaking' || s.state === 'paused';
-  transportEl.hidden = !active;
-  document.getElementById('pause')!.hidden = s.state !== 'speaking';
-  document.getElementById('resume')!.hidden = s.state !== 'paused';
+  renderFooter();
 
   switch (s.state) {
     case 'speaking':
@@ -343,60 +383,15 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
   }
 });
 
-// -- Model selector ---------------------------------------------------------
+// -- Settings and installed models -----------------------------------------
 
-const modelBtn = document.getElementById('model-btn') as HTMLButtonElement;
-const modelNameEl = document.getElementById('model-name') as HTMLElement;
-const modelMenu = document.getElementById('model-menu') as HTMLElement;
-let selectedModel: ModelId | null = null;
-
-function renderModelButton(): void {
-  modelNameEl.textContent = selectedModel ? MODELS[selectedModel].shortName : 'None installed';
-}
-
-async function openModelMenu(): Promise<void> {
-  const s = await getSettings();
-  const downloaded = MODEL_IDS.filter((id) => s.downloaded[id]);
-  modelMenu.replaceChildren();
-  for (const id of downloaded) {
-    const item = document.createElement('button');
-    item.className = 'model-item';
-    const check = document.createElement('span');
-    check.className = 'check';
-    check.textContent = id === selectedModel ? '✓' : '';
-    const names = document.createElement('span');
-    names.className = 'names';
-    const short = document.createElement('div');
-    short.className = 'short';
-    short.textContent = MODELS[id].shortName;
-    const real = document.createElement('div');
-    real.className = 'real';
-    real.textContent = MODELS[id].displayName;
-    names.append(short, real);
-    item.append(check, names);
-    item.addEventListener('click', () => void chooseModel(id));
-    modelMenu.append(item);
-  }
-  const manage = document.createElement('button');
-  manage.className = 'model-item manage';
-  manage.textContent = downloaded.length === 0 ? 'Install a voice model…' : 'Manage models…';
-  manage.addEventListener('click', () => {
-    void chrome.tabs.create({ url: chrome.runtime.getURL('onboarding/onboarding.html') });
-  });
-  modelMenu.append(manage);
-  modelMenu.hidden = false;
-}
-
+/** Switching model mid-read re-speaks the remainder from the active line. The
+ *  sheet delegates this here because the transcript lives in this module. */
 async function chooseModel(id: ModelId): Promise<void> {
-  modelMenu.hidden = true;
-  if (id === selectedModel) return;
-  selectedModel = id;
-  renderModelButton();
   await mutateSettings(() => ({ selectedModel: id }));
   const reading =
     lastStatus !== null && (lastStatus.state === 'speaking' || lastStatus.state === 'paused');
   if (reading && chunkStrings.length > 0) {
-    // Re-speak the remainder with the new model, starting at the active line.
     // The background enriches the command with the just-saved model/voice.
     const from = Math.max(activeIndex, 0);
     sendPlayerCmd({
@@ -409,23 +404,29 @@ async function chooseModel(id: ModelId): Promise<void> {
   }
 }
 
-modelBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  if (modelMenu.hidden) void openModelMenu();
-  else modelMenu.hidden = true;
-});
-document.addEventListener('click', (e) => {
-  if (!modelMenu.hidden && !modelMenu.contains(e.target as Node)) modelMenu.hidden = true;
-});
+function applySettings(s: Settings): void {
+  installedIds = MODEL_IDS.filter((id) => s.downloaded[id]);
+  settingsMenu.apply(s, installedIds);
+  renderFooter();
+}
 
-void getSettings().then((s) => {
-  selectedModel = s.selectedModel;
-  renderModelButton();
-});
-onSettingsChanged((s) => {
-  selectedModel = s.selectedModel;
-  renderModelButton();
-});
+/** The panel opens on every toolbar click, so this is where settings meet the
+ *  filesystem: an evicted cache or a half-finished download would otherwise
+ *  leave a model in the picker that cannot speak a word. The background is the
+ *  only writer of settings, so a difference is reported, not fixed here. */
+async function loadSettings(): Promise<void> {
+  const [settings, installed] = await Promise.all([getSettings(), installedModels(MODEL_IDS)]);
+  installedIds = MODEL_IDS.filter((id) => installed[id]);
+  settingsMenu.apply(settings, installedIds);
+  renderFooter();
+  if (MODEL_IDS.some((id) => Boolean(settings.downloaded[id]) !== installed[id])) {
+    void chrome.runtime
+      .sendMessage({ target: 'background', type: 'installed-state', installed } satisfies Message)
+      .catch(() => {});
+  }
+}
+
+onSettingsChanged(applySettings);
 
 // -- Visualizer -------------------------------------------------------------
 
@@ -522,8 +523,10 @@ function draw(): void {
 }
 
 showLyrics(false);
+renderFooter();
 connectPort();
 sendPlayerCmd({ type: 'get-status' });
+void loadSettings();
 void loadReadingTab();
 void initTabTracking();
 requestAnimationFrame(draw);

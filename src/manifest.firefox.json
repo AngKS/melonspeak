@@ -28,7 +28,6 @@
     "open_at_install": false
   },
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "MelonSpeak",
     "default_icon": {
       "16": "icons/icon16.png",

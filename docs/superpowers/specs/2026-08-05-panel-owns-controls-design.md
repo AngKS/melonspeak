@@ -1,7 +1,7 @@
 # The side panel owns every setting and control; the popup goes away
 
 Date: 2026-08-05
-Branch: `worktree-panel-owns-controls` (from `346f8f7`)
+Branch: `worktree-panel-owns-controls` (from `8721400`)
 
 ## Scope
 
@@ -39,8 +39,10 @@ the URL keeps working.
 
 ## Toolbar icon
 
-Both manifests drop `action.default_popup`. On `runtime.onInstalled` and
-`runtime.onStartup` the background resolves which surface it has and wires it:
+Both manifests drop `action.default_popup`. The background resolves which
+surface it has and wires it at every worker/event-page start — not only on
+install, because an MV3 service worker is torn down and restarted constantly and
+this is idempotent:
 
 | Surface | Wiring |
 |---|---|
@@ -86,9 +88,8 @@ export type FooterMode = 'setup' | 'idle' | 'reading';
 export function resolveFooterMode(state: PlayerState, hasModel: boolean): FooterMode;
 ```
 
-- **`setup`** (no model installed) — "Download a voice model to start
-  listening" and a **Finish setup** button opening the onboarding tab. Wins over
-  every player state: without a model nothing can play.
+- **`setup`** (no model installed, nothing playing) — "Download a voice model to
+  start listening" and a **Finish setup** button opening the onboarding tab.
 - **`idle`** — **▶ Read this page** (primary) and **▶ Read highlighted text**.
 - **`reading`** (`speaking`, `paused`, `preparing`, `loading-model`) —
   `⏸`/`▶` and `⏹`, then a split **▶ Read this page ▾**. The ▾ menu holds
@@ -161,15 +162,16 @@ opens on every toolbar click.
   better progress display, and the panel always shows them.
 - The **Now Reading view** button. The panel is that view.
 - The popup's duplicated now-reading title line; the panel header has it.
-- `openSidebar()` calls from UI pages. Only `contextMenus.onClicked` still opens
-  the sidebar, so `lib/sidebar.ts` keeps that path and `primeSidebar()`'s
-  window-id cache — used by nothing else — is removed.
+- The popup's `openSidebar()` calls. `lib/sidebar.ts` keeps the function and
+  `primeSidebar()`'s window-id cache regardless: `contextMenus.onClicked` opens
+  the sidebar for a tab, and the onboarding tab's per-model **try it** button
+  opens it without one.
 
 ## Build
 
 `scripts/build.mjs` drops the `popup/popup` entry point and `popup` from the
-page-copy list, and gains the two new `reader/` entry points. `src/popup/` is
-deleted.
+page-copy list. The two new `reader/` modules need no entry points of their own
+— `reader.ts` imports them and esbuild bundles them in. `src/popup/` is deleted.
 
 ## Testing
 
@@ -177,9 +179,12 @@ deleted.
 
 - `resolveActionSurface` — both APIs → `side-panel`; sidebar only → `sidebar`;
   neither → `popup`.
-- `resolveFooterMode` — `setup` wins with no model in every player state;
-  `speaking`/`paused`/`preparing`/`loading-model` → `reading`; `idle` and
-  `error` → `idle`.
+- `resolveFooterMode` — `speaking`/`paused`/`preparing`/`loading-model` →
+  `reading` whether or not a model is installed (removing the last model
+  mid-read must not take Stop away); `idle`/`error` → `idle` with a model,
+  `setup` without one.
+- `resolveReadTarget` — names the active tab; defers when it would name itself
+  or knows no tab.
 
 **Smoke** (`scripts/smoke.mjs`, real Chrome for Testing):
 
@@ -197,15 +202,31 @@ no `default_popup`.
 
 `verify-read.mjs` retargets its popup transport assertion to `reader.html`.
 
-### The assumption worth testing explicitly
+### The panel names the tab, rather than the background inferring it
 
-`readActiveTab()` resolves its target with
-`tabs.query({ active: true, lastFocusedWindow: true })`. A click from the side
-panel must resolve to the *content* tab — panels are not tabs, so it should —
-but the whole migration rests on it. The smoke run asserts it directly: click
-**Read this page** from the panel and confirm the read starts on the expected
-page rather than failing with "No active tab to read."
+The original plan left `readActiveTab()` to resolve the target with
+`tabs.query({ active: true, lastFocusedWindow: true })` and have the smoke run
+assert that a panel click lands on the content tab. That assertion turned out
+to be unautomatable: puppeteer has no way to open a real Chrome side panel, so
+the test would have exercised `reader.html` in a *tab* — where the reading view
+is itself the active tab, which is not the case under test.
 
-If that assumption turns out false on either browser, the fallback is for the
-panel to pass its window's active tab id explicitly in the `read-page` message
-and for the background to prefer it when present.
+Rather than ship an untestable assumption, the panel states its target. A new
+pure helper decides what to send:
+
+```ts
+// src/lib/reader-controls.ts
+export function resolveReadTarget(input: {
+  activeTabId: number | null;
+  ownTabId: number | null;
+}): number | undefined;
+```
+
+The reading view already tracks its window's active tab for the backgrounded
+badge; it also asks `tabs.getCurrent()` for its own tab id, which is `null` in a
+panel or popup and set only when it is open as a tab. `read-page` and
+`read-selection` carry the resulting `tabId` when there is one, and the
+background prefers it over the active-tab query, which remains the fallback for
+the context menu and for a view that would otherwise target itself.
+
+The unit tests cover all three cases; the smoke run covers the wiring.

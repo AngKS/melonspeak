@@ -6,7 +6,8 @@ import { broadcast } from './lib/messages';
 import type { ReadingTabState } from './lib/reading-tab';
 import { READING_TAB_KEY } from './lib/reading-tab';
 import { getSettings, mutateSettings } from './lib/settings';
-import { openSidebar } from './lib/sidebar';
+import { hasSidebarAction, openSidebar, toggleSidebar } from './lib/sidebar';
+import { resolveActionSurface } from './lib/action-surface';
 
 const IS_CHROME_OFFSCREEN = typeof chrome.offscreen !== 'undefined';
 const MENU_ID = 'melonspeak-speak';
@@ -22,6 +23,29 @@ chrome.runtime.onInstalled.addListener((details) => {
     void chrome.tabs.create({ url: chrome.runtime.getURL('onboarding/onboarding.html') });
   }
 });
+
+// The toolbar button opens the reading panel, which now holds every setting
+// and control. Run at every worker/event-page start rather than only on
+// install: an MV3 worker is torn down and restarted constantly, and this is
+// idempotent.
+function applyActionSurface(): void {
+  const surface = resolveActionSurface({
+    hasSidePanel: typeof chrome.sidePanel?.setPanelBehavior === 'function',
+    hasSidebarAction: hasSidebarAction(),
+  });
+  if (surface === 'side-panel') {
+    void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  } else if (surface === 'popup') {
+    // No sidebar of any kind: serve the reading view as the action popup so no
+    // control becomes unreachable. The parameter makes it size itself.
+    void chrome.action?.setPopup({ popup: 'reader/reader.html?surface=popup' });
+  }
+  // 'sidebar' (Firefox) is handled by the onClicked listener below; Chrome
+  // never fires it once setPanelBehavior is on.
+}
+applyActionSurface();
+
+chrome.action?.onClicked?.addListener(() => toggleSidebar());
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== MENU_ID || tab?.id === undefined) return;
@@ -114,7 +138,10 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
     if (msg.cmd.type === 'stop') void setReadingTab(null);
     void deliverToPlayer(msg.cmd);
   } else if (msg.type === 'read-page' || msg.type === 'read-selection') {
-    void readActiveTab(msg.type === 'read-page' ? 'page' : 'selection');
+    const mode = msg.type === 'read-page' ? 'page' : 'selection';
+    // The panel knows which page it is looking at; trust it over inferring one.
+    if (msg.tabId !== undefined) void readTab(msg.tabId, mode);
+    else void readActiveTab(mode);
   } else if (msg.type === 'installed-state') {
     void reconcileInstalled(msg.installed);
   } else if (msg.type === 'clear-reading-tab') {

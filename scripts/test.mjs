@@ -15,6 +15,7 @@ await esbuild.build({
     'tts-normalize': 'src/lib/tts-normalize.ts',
     'reading-tab': 'src/lib/reading-tab.ts',
     'reader-controls': 'src/lib/reader-controls.ts',
+    'action-surface': 'src/lib/action-surface.ts',
     settings: 'src/lib/settings.ts',
     'viz-levels': 'src/lib/viz-levels.ts',
   },
@@ -28,9 +29,9 @@ const { normalizeForTTS, expandForSpeech } = await import(join(outdir, 'tts-norm
 const { serializeReadable } = await import(join(outdir, 'readable-text.js'));
 const { preprocessText, textToIds } = await import(join(outdir, 'supertonic-text.js'));
 const { computeBadge } = await import(join(outdir, 'reading-tab.js'));
-const { resolveSpaceAction, shouldFollowActiveLine } = await import(
-  join(outdir, 'reader-controls.js')
-);
+const { resolveSpaceAction, shouldFollowActiveLine, resolveFooterMode, resolveReadTarget } =
+  await import(join(outdir, 'reader-controls.js'));
+const { resolveActionSurface } = await import(join(outdir, 'action-surface.js'));
 const settingsMod = await import(join(outdir, 'settings.js'));
 const { binLevels } = await import(join(outdir, 'viz-levels.js'));
 
@@ -606,6 +607,80 @@ test('the transcript follows the active line only while a read is live', () => {
   for (const state of ['idle', 'loading-model', 'error']) {
     assert.equal(shouldFollowActiveLine(state), false, state);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Panel footer mode
+// ---------------------------------------------------------------------------
+
+test('with no model installed and nothing playing the footer offers setup', () => {
+  assert.equal(resolveFooterMode('idle', false), 'setup');
+  assert.equal(resolveFooterMode('error', false), 'setup');
+});
+
+// Removing the last model from the onboarding tab mid-read must not strand the
+// user with audio playing and no Stop button.
+test('a live read keeps its transport even with no model left installed', () => {
+  for (const state of ['speaking', 'paused', 'preparing', 'loading-model']) {
+    assert.equal(resolveFooterMode(state, false), 'reading', state);
+  }
+});
+
+test('a live read shows the transport, including while it is still starting', () => {
+  for (const state of ['speaking', 'paused', 'preparing', 'loading-model']) {
+    assert.equal(resolveFooterMode(state, true), 'reading', state);
+  }
+});
+
+// An error leaves nothing to pause or stop, so the read buttons come back and
+// the user can simply try again.
+test('idle and error offer the read buttons', () => {
+  assert.equal(resolveFooterMode('idle', true), 'idle');
+  assert.equal(resolveFooterMode('error', true), 'idle');
+});
+
+// ---------------------------------------------------------------------------
+// Which tab a read started from the panel targets
+// ---------------------------------------------------------------------------
+
+test('the panel names the active tab of its own window', () => {
+  assert.equal(resolveReadTarget({ activeTabId: 7, ownTabId: null }), 7);
+});
+
+// Open as a tab (the surface nothing links to any more), the view IS the
+// active tab. Reading an extension page is never what was asked for, so it
+// defers instead of naming itself.
+test('a reading view open as a tab never targets itself', () => {
+  assert.equal(resolveReadTarget({ activeTabId: 7, ownTabId: 7 }), undefined);
+});
+
+test('with no active tab known the background decides', () => {
+  assert.equal(resolveReadTarget({ activeTabId: null, ownTabId: null }), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Which surface the toolbar button opens
+// ---------------------------------------------------------------------------
+
+const surface = (hasSidePanel, hasSidebarAction) =>
+  resolveActionSurface({ hasSidePanel, hasSidebarAction });
+
+test('Chrome opens its side panel', () => {
+  assert.equal(surface(true, false), 'side-panel');
+});
+
+test('Firefox opens its sidebar', () => {
+  assert.equal(surface(false, true), 'sidebar');
+});
+
+// Only reachable in a browser with neither API: the reading view is served as
+// the action popup instead, so no control becomes unreachable.
+test('with neither API the reading view becomes the popup', () => {
+  assert.equal(surface(false, false), 'popup');
+});
+
+test('the side panel wins if a browser somehow offers both', () => {
+  assert.equal(surface(true, true), 'side-panel');
 });
 
 if (failures > 0) {

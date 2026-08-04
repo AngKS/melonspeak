@@ -20,7 +20,6 @@
     "default_path": "reader/reader.html"
   },
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "MelonSpeak",
     "default_icon": {
       "16": "icons/icon16.png",

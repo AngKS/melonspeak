@@ -7,15 +7,18 @@ ever leaves your computer.
 
 ## Features
 
+- **One panel, everything in it** — the toolbar button opens the reading panel
+  (side panel on Chrome, `sidebar_action` on Firefox); there is no popup. Read
+  page, read highlighted text, pause/stop, voice model, voice and speed all
+  live there.
 - **Read page** — extracts the readable article (Mozilla Readability) and speaks it.
 - **Read highlighted text** — or right-click a selection → **Speak content**.
 - **Now Reading view** — Apple Music-style auto-scrolling lyrics with a live
-  audio visualizer; click any line to jump there. Opens automatically in the
-  sidebar when a read starts (side panel on Chrome, `sidebar_action` on
-  Firefox), and badges itself **⤴ BACKGROUND** when you switch away from the
+  audio visualizer; click any line to jump there. Opens automatically when a
+  read starts, and badges itself **⤴ BACKGROUND** when you switch away from the
   page being read — click the header to go back. Closing that tab stops the
   read and says so.
-- **Switch models/voices** — pick between local TTS models at any time:
+- **Switch models/voices** — from the **☰** menu in the panel, at any time:
 
 | Model | Real name | Download | Notes |
 |---|---|---|---|
@@ -71,7 +74,12 @@ The smoke tests need the Chrome for Testing binary (branded Chrome ≥137 remove
   disk (and for deleting it): storage-only, so UI pages can check without
   loading any engine code. Every "Installed" claim is verified against it.
 - `src/content/extract.ts` — Readability extraction / selection capture.
-- `src/popup/`, `src/onboarding/`, `src/reader/` — the three surfaces.
+- `src/reader/` — the reading panel, and the only interactive surface: it
+  renders as Chrome's side panel, Firefox's sidebar, or (where neither API
+  exists) the action popup itself. `read-actions.ts` owns the footer,
+  `settings-menu.ts` the ☰ sheet.
+- `src/onboarding/` — first run, and everything about downloading or removing
+  models.
 
 All inference runs on WASM (onnxruntime-web, single-threaded) with runtimes
 bundled inside the extension — no CDN, no remote code.

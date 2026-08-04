@@ -2,7 +2,7 @@
 // surfaces boot without errors. With --download it also downloads the Piper
 // model and runs a real end-to-end synthesis check.
 import puppeteer from 'puppeteer-core';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   MB,
@@ -112,12 +112,56 @@ if (FRESH) {
   }
 }
 
-const popup = await openPage('popup/popup.html', 'popup');
-const setupVisible = await popup.$eval('#setup', (el) => !el.hidden);
-console.log('popup shows setup prompt (no models yet):', setupVisible);
-if (!setupVisible && FRESH) errors.push('popup should show setup prompt on a fresh profile');
+// The toolbar button must open the panel, not a popup: the panel is the only
+// surface carrying the settings and controls now.
+{
+  const manifest = JSON.parse(readFileSync(join(EXT, 'manifest.json'), 'utf8'));
+  console.log('action keys:', Object.keys(manifest.action).join(', '));
+  if (manifest.action.default_popup) {
+    errors.push('action still declares a default_popup; the toolbar button must open the panel');
+  }
+  if (manifest.side_panel?.default_path !== 'reader/reader.html') {
+    errors.push('side_panel no longer points at the reading view');
+  }
+}
 
 const reader = await openPage('reader/reader.html', 'reader');
+
+const setupVisible = await reader.$eval('#setup-actions', (el) => !el.hidden);
+console.log('panel shows setup prompt (no models yet):', setupVisible);
+if (!setupVisible && FRESH) errors.push('panel should show setup prompt on a fresh profile');
+
+// Every control the popup used to own must be reachable from the panel.
+const sheet = await reader.evaluate(async () => {
+  const open = () => document.getElementById('menu-btn').click();
+  open();
+  await new Promise((r) => setTimeout(r, 100));
+  return {
+    expanded: document.getElementById('menu-btn').getAttribute('aria-expanded'),
+    sheetVisible: !document.getElementById('sheet').hidden,
+    hasSpeed: Boolean(document.getElementById('speed')),
+    hasManage: Boolean(document.getElementById('manage')),
+    modelItems: document.querySelectorAll('#model-list .model-item').length,
+  };
+});
+console.log('settings sheet:', JSON.stringify(sheet));
+if (!sheet.sheetVisible || sheet.expanded !== 'true') {
+  errors.push('the ☰ button did not open the settings sheet');
+}
+if (!sheet.hasSpeed || !sheet.hasManage) {
+  errors.push('the settings sheet is missing the speed control or the model manager link');
+}
+if (FRESH && sheet.modelItems !== 0) {
+  errors.push(`fresh profile listed ${sheet.modelItems} installed models`);
+}
+await reader.evaluate(() => document.getElementById('scrim').click());
+
+const readButtons = await reader.evaluate(() =>
+  ['read-page', 'read-selection', 'read-page-live', 'menu-read-selection'].filter(
+    (id) => !document.getElementById(id),
+  ),
+);
+if (readButtons.length) errors.push(`panel is missing read controls: ${readButtons.join(', ')}`);
 // With nothing being read the badge machinery must be completely inert, and
 // the header must not advertise a click target it won't honour.
 const badgeIdle = await reader.evaluate(() => ({
@@ -434,10 +478,10 @@ if (DO_DOWNLOAD) {
   if (isStored(MODEL, afterRemove)) errors.push(`${MODEL} files survived Remove`);
   await onboarding.screenshot({ path: join(OUT, 'onboarding-removed.png') });
 
-  const popupAfter = await openPage('popup/popup.html', 'popup-after-remove');
-  const backToSetup = await popupAfter.$eval('#setup', (el) => !el.hidden);
-  console.log('popup returns to setup prompt after removing the last model:', backToSetup);
-  if (!backToSetup) errors.push('popup still offers a model after the last one was removed');
+  const panelAfter = await openPage('reader/reader.html', 'panel-after-remove');
+  const backToSetup = await panelAfter.$eval('#setup-actions', (el) => !el.hidden);
+  console.log('panel returns to setup prompt after removing the last model:', backToSetup);
+  if (!backToSetup) errors.push('panel still offers a read after the last model was removed');
 }
 
 await browser.close();
