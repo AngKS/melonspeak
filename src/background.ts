@@ -139,7 +139,9 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
     void deliverToPlayer(msg.cmd);
   } else if (msg.type === 'read-page' || msg.type === 'read-selection') {
     const mode = msg.type === 'read-page' ? 'page' : 'selection';
-    // The panel knows which page it is looking at; trust it over inferring one.
+    // The reading view names the tab outright: it lives in a browser window
+    // and knows that window's active tab, which lastFocusedWindow cannot be
+    // relied on to reproduce.
     if (msg.tabId !== undefined) void readTab(msg.tabId, mode);
     else void readActiveTab(mode);
   } else if (msg.type === 'installed-state') {

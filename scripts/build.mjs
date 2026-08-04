@@ -46,6 +46,7 @@ async function buildTarget(browser) {
     entryPoints: {
       background: 'src/background.ts',
       'content/extract': 'src/content/extract.ts',
+      'content/selection-watch': 'src/content/selection-watch.ts',
     },
     format: 'iife',
     outdir: out,

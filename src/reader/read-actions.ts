@@ -31,7 +31,6 @@ function requestRead(mode: 'page' | 'selection', tabId: number | undefined): voi
 
 export function initReadActions(deps: ReadActionsDeps): ReadActions {
   const setupActions = $('setup-actions');
-  const idleActions = $('idle-actions');
   const readingActions = $('reading-actions');
   const readMenu = $('read-menu');
   const readMore = $<HTMLButtonElement>('read-more');
@@ -46,18 +45,18 @@ export function initReadActions(deps: ReadActionsDeps): ReadActions {
 
   $('finish-setup').addEventListener('click', () => deps.openOnboarding());
 
-  for (const id of ['read-page', 'read-page-live', 'menu-read-page']) {
+  // Only the reading-state controls: when nothing is playing the CTA cards own
+  // starting a read, and they carry live previews the footer cannot.
+  for (const id of ['read-page-live', 'menu-read-page']) {
     $(id).addEventListener('click', () => {
       closeMenu();
       requestRead('page', deps.readTargetTabId());
     });
   }
-  for (const id of ['read-selection', 'menu-read-selection']) {
-    $(id).addEventListener('click', () => {
-      closeMenu();
-      requestRead('selection', deps.readTargetTabId());
-    });
-  }
+  $('menu-read-selection').addEventListener('click', () => {
+    closeMenu();
+    requestRead('selection', deps.readTargetTabId());
+  });
 
   $('pause').addEventListener('click', () => deps.sendPlayerCmd({ type: 'pause' }));
   $('resume').addEventListener('click', () => deps.sendPlayerCmd({ type: 'resume' }));
@@ -74,9 +73,9 @@ export function initReadActions(deps: ReadActionsDeps): ReadActions {
   return {
     closeMenu,
     update(state, hasModel) {
+      // 'idle' shows neither block: the CTA cards above are the idle UI.
       const mode = resolveFooterMode(state, hasModel);
       setupActions.hidden = mode !== 'setup';
-      idleActions.hidden = mode !== 'idle';
       readingActions.hidden = mode !== 'reading';
       if (mode !== 'reading') closeMenu();
       // Pause and resume swap in place; the player guards both commands, but

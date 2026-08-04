@@ -16,6 +16,7 @@ await esbuild.build({
     'reading-tab': 'src/lib/reading-tab.ts',
     'reader-controls': 'src/lib/reader-controls.ts',
     'action-surface': 'src/lib/action-surface.ts',
+    'cta-state': 'src/lib/cta-state.ts',
     settings: 'src/lib/settings.ts',
     'viz-levels': 'src/lib/viz-levels.ts',
   },
@@ -32,6 +33,9 @@ const { computeBadge } = await import(join(outdir, 'reading-tab.js'));
 const { resolveSpaceAction, shouldFollowActiveLine, resolveFooterMode, resolveReadTarget } =
   await import(join(outdir, 'reader-controls.js'));
 const { resolveActionSurface } = await import(join(outdir, 'action-surface.js'));
+const { computeCtaView, previewSelection, formatDuration, isReadableUrl } = await import(
+  join(outdir, 'cta-state.js')
+);
 const settingsMod = await import(join(outdir, 'settings.js'));
 const { binLevels } = await import(join(outdir, 'viz-levels.js'));
 
@@ -681,6 +685,109 @@ test('with neither API the reading view becomes the popup', () => {
 
 test('the side panel wins if a browser somehow offers both', () => {
   assert.equal(surface(true, true), 'side-panel');
+});
+
+// CTA cards (idle-state call to action)
+// ---------------------------------------------------------------------------
+
+const view = (playerState, hasLines, stopReason = null) =>
+  computeCtaView({ playerState, hasLines, stopReason });
+
+test('cards stay out of the way while audio is playing', () => {
+  assert.equal(view('speaking', true), 'hidden');
+  assert.equal(view('paused', true), 'hidden');
+  assert.equal(view('loading-model', true), 'hidden');
+});
+
+test('preparing hides the cards even with no transcript yet', () => {
+  // Something is already on its way; offering a second request here would
+  // cancel the first.
+  assert.equal(view('preparing', false), 'hidden');
+  assert.equal(view('preparing', true), 'hidden');
+});
+
+test('idle with nothing read gives the full-size cards', () => {
+  assert.equal(view('idle', false), 'full');
+});
+
+test('a finished read keeps its transcript and tucks the cards underneath', () => {
+  assert.equal(view('idle', true), 'compact');
+});
+
+test('errors offer a way forward instead of a dead end', () => {
+  assert.equal(view('error', false), 'full');
+  assert.equal(view('error', true), 'compact');
+});
+
+test('a tab-close stop keeps the transcript, whatever the player state says', () => {
+  // stopAll() broadcasts an empty transcript, so hasLines can be false here
+  // while the view still shows the dimmed lyrics it deliberately kept.
+  assert.equal(view('idle', true, 'tab-closed'), 'compact');
+  assert.equal(view('idle', false, 'tab-closed'), 'compact');
+});
+
+test('selection preview counts words and quotes the text', () => {
+  const s = previewSelection('Hello there, wonderful world');
+  assert.equal(s.words, 4);
+  assert.equal(s.quote, 'Hello there, wonderful world');
+  assert.equal(s.chars, 28);
+});
+
+test('whitespace-only selection previews as empty', () => {
+  const s = previewSelection('   \n\t  ');
+  assert.equal(s.words, 0);
+  assert.equal(s.quote, '');
+  assert.equal(s.chars, 0);
+});
+
+test('long selections are clamped for the quote but counted in full', () => {
+  const text = 'word '.repeat(400).trim(); // 400 words, 1999 chars
+  const s = previewSelection(text);
+  assert.equal(s.words, 400);
+  assert.equal(s.chars, 1999);
+  assert.ok(s.quote.length <= 241, `quote was ${s.quote.length} chars`);
+  assert.ok(s.quote.endsWith('…'), `no ellipsis: ${JSON.stringify(s.quote.slice(-10))}`);
+});
+
+test('newlines in a selection collapse into a single-line quote', () => {
+  const s = previewSelection('first line\n\n  second line  ');
+  assert.equal(s.quote, 'first line second line');
+  assert.equal(s.words, 4);
+});
+
+test('duration scales with the saved speed', () => {
+  const words = 330; // ≈ 2 min at 165 wpm
+  assert.equal(formatDuration(words, 1), '~2 min');
+  assert.equal(formatDuration(words, 2), '~1 min');
+});
+
+test('short selections read in seconds, not "0 min"', () => {
+  assert.match(formatDuration(6, 1), /^~\d+ s$/);
+});
+
+test('speed of zero or nonsense never yields Infinity or NaN', () => {
+  // settings.speed is user-editable; a bad value must not reach the UI.
+  for (const speed of [0, -1, NaN, undefined]) {
+    const d = formatDuration(3, speed);
+    assert.match(d, /^~\d+ (s|min)$/, `speed ${speed} produced ${JSON.stringify(d)}`);
+  }
+});
+
+test('no words means no duration string at all', () => {
+  assert.equal(formatDuration(0, 1), '');
+});
+
+test('pages no extension can script are refused up front', () => {
+  assert.equal(isReadableUrl('https://example.com/article'), true);
+  assert.equal(isReadableUrl('http://localhost:8080/'), true);
+  assert.equal(isReadableUrl('file:///Users/me/notes.html'), true);
+  assert.equal(isReadableUrl('chrome://settings'), false);
+  assert.equal(isReadableUrl('about:blank'), false);
+  assert.equal(isReadableUrl('moz-extension://abc/reader.html'), false);
+  assert.equal(isReadableUrl('chrome-extension://abc/reader.html'), false);
+  assert.equal(isReadableUrl('https://chromewebstore.google.com/detail/x'), false);
+  assert.equal(isReadableUrl('https://addons.mozilla.org/en-US/firefox/'), false);
+  assert.equal(isReadableUrl(undefined), false);
 });
 
 if (failures > 0) {

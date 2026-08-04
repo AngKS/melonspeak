@@ -90,7 +90,7 @@ export function resolveFooterMode(state: PlayerState, hasModel: boolean): Footer
 
 - **`setup`** (no model installed, nothing playing) — "Download a voice model to
   start listening" and a **Finish setup** button opening the onboarding tab.
-- **`idle`** — **▶ Read this page** (primary) and **▶ Read highlighted text**.
+- **`idle`** — nothing. See *Reconciling with the CTA cards* below.
 - **`reading`** (`speaking`, `paused`, `preparing`, `loading-model`) —
   `⏸`/`▶` and `⏹`, then a split **▶ Read this page ▾**. The ▾ menu holds
   *Read this page* and *Read highlighted text*. Choosing either replaces the
@@ -102,6 +102,24 @@ selects used to provide.
 
 `error` keeps today's treatment — the eyebrow shows `⚠ detail` — and the footer
 falls back to `idle` so the user can retry.
+
+### Reconciling with the CTA cards
+
+`worktree-cta-cards` landed on main during implementation, adding cards to the
+panel's idle area — *Read this page* with the live tab title, *Read highlighted
+text* with a live quote and duration, and *Read this again* to replay. Those
+answer the same question as this design's idle footer buttons, with more
+information, so the cards keep the idle slot and the footer's `idle` mode shows
+nothing at all. The footer still owns what cards cannot: `computeCtaView`
+returns `hidden` for every playing state, so the split **▶ Read this page ▾** is
+the only way to start a new read without stopping the current one.
+
+That branch also carried `host_permissions: ["<all_urls>"]`, which this design
+needed and did not have. Chrome grants `activeTab` on an action click, a context
+menu item, a `commands` shortcut, or an omnibox pick — clicking inside a side
+panel is none of them, so `executeScript` throws for any tab the user has not
+already poked and `readTab()` reports it as a browser-restricted page. Panel
+reads do not work without the host permission.
 
 ## The ☰ sheet
 
