@@ -9,6 +9,7 @@ const outdir = mkdtempSync(join(tmpdir(), 'melonspeak-test-'));
 await esbuild.build({
   entryPoints: {
     chunker: 'src/lib/chunker.ts',
+    'trim-silence': 'src/lib/trim-silence.ts',
     'readable-text': 'src/lib/readable-text.ts',
     'supertonic-text': 'src/engines/supertonic-text.ts',
     'tts-normalize': 'src/lib/tts-normalize.ts',
@@ -20,6 +21,7 @@ await esbuild.build({
   outdir,
 });
 const { chunkText } = await import(join(outdir, 'chunker.js'));
+const { trimSilence } = await import(join(outdir, 'trim-silence.js'));
 const { normalizeForTTS, expandForSpeech } = await import(join(outdir, 'tts-normalize.js'));
 const { serializeReadable } = await import(join(outdir, 'readable-text.js'));
 const { preprocessText, textToIds } = await import(join(outdir, 'supertonic-text.js'));
@@ -302,6 +304,55 @@ test('clean prose passes through', () => {
 
 test('chunker applies TTS normalization', () => {
   assert.deepEqual(chunkText('ex­ample one.'), ['example one.']);
+});
+
+// ---------------------------------------------------------------------------
+// Silence trimming. Every engine pads its output with silence (measured on
+// Kokoro: ~320 ms leading, ~490 ms trailing), and that padding lands at every
+// chunk boundary twice over, which is most of the unnatural inter-chunk pause.
+// ---------------------------------------------------------------------------
+
+const SR = 1000; // 1 sample per ms keeps the arithmetic readable
+/** Constant-amplitude signal; never dips below the silence threshold. */
+const tone = (n, amp = 0.5) => Float32Array.from({ length: n }, (_, i) => (i % 2 ? amp : -amp));
+const silence = (n) => new Float32Array(n);
+const concat = (...parts) => {
+  const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+};
+
+test('leading and trailing silence are trimmed down to the pad', () => {
+  const out = trimSilence(concat(silence(500), tone(1000), silence(800)), SR, 60);
+  assert.equal(out.length, 60 + 1000 + 60);
+});
+
+test('audio with no silence to trim is returned unchanged', () => {
+  const out = trimSilence(tone(500), SR, 60);
+  assert.equal(out.length, 500);
+});
+
+test('the pad never invents samples that were not there', () => {
+  const out = trimSilence(concat(silence(10), tone(100), silence(10)), SR, 60);
+  assert.equal(out.length, 10 + 100 + 10);
+});
+
+test('an entirely silent chunk trims to nothing instead of returning garbage', () => {
+  assert.equal(trimSilence(silence(1000), SR, 60).length, 0);
+});
+
+test('quiet speech is not mistaken for silence', () => {
+  assert.equal(trimSilence(tone(500, 0.02), SR, 0).length, 500);
+});
+
+test('trimming keeps the speech itself sample-for-sample', () => {
+  const speech = tone(200);
+  const out = trimSilence(concat(silence(300), speech, silence(300)), SR, 0);
+  assert.deepEqual(Array.from(out), Array.from(speech));
 });
 
 // ---------------------------------------------------------------------------

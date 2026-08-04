@@ -6,6 +6,7 @@
 // model's WASM memory.
 import { loadEngineModule } from '../engines/registry';
 import { isInstalled } from '../engines/model-storage';
+import { trimSilence } from '../lib/trim-silence';
 import type { TTSEngine } from '../engines/types';
 import type { ModelId } from '../lib/messages';
 
@@ -43,8 +44,13 @@ async function handle(req: WorkerRequest): Promise<void> {
       case 'synthesize': {
         if (!engine) throw new Error('No engine loaded');
         const result = await engine.synthesize(req.text, req.voice);
+        // Engines pad every chunk with silence at both ends, which lands at
+        // each chunk boundary twice over and reads as an unnatural pause.
+        // Trimmed here so it costs nothing to transfer and every engine gets
+        // it for free.
+        const trimmed = trimSilence(result.samples, result.sampleRate);
         // Copy before transfer: the result may be a view into WASM heap memory.
-        const samples = new Float32Array(result.samples);
+        const samples = new Float32Array(trimmed);
         scope.postMessage(
           { type: 'result', id: req.id, samples, sampleRate: result.sampleRate },
           [samples.buffer],
