@@ -130,6 +130,41 @@ test('single newlines are spaces, not boundaries', () => {
   assert.deepEqual(chunks, ['line one line two.']);
 });
 
+// firstChunkMax: time-to-first-word is gated by the first chunk's synthesis
+// time, so the read opens with small chunks and ramps up to full size.
+
+test('first chunk is capped when firstChunkMax is given', () => {
+  const sentence = 'This opening sentence is quite long and would normally form one big chunk. ';
+  const text = sentence.repeat(6);
+  const chunks = chunkText(text, 300, 80);
+  assert.ok(chunks[0].length <= 80, `first chunk too long: ${chunks[0].length}`);
+  assert.equal(lettersOf(chunks.join(' ')), lettersOf(text), 'text lost or duplicated');
+  for (const c of chunks) assert.ok(c.length <= 300, `chunk too long: ${c.length}`);
+});
+
+test('firstChunkMax splits only the opening chunk, later ones stay full-size', () => {
+  const text = 'Word. '.repeat(120);
+  const chunks = chunkText(text, 300, 80);
+  assert.ok(chunks[0].length <= 80);
+  // The tail must still merge into large chunks — the cap is not global.
+  assert.ok(
+    chunks.some((c) => c.length > 200),
+    `all ${chunks.length} chunks stayed small: ${chunks.map((c) => c.length).join(',')}`,
+  );
+});
+
+test('an already-short first chunk is left alone', () => {
+  assert.deepEqual(chunkText('Short one.\n\nSecond paragraph here.', 300, 80), [
+    'Short one.',
+    'Second paragraph here.',
+  ]);
+});
+
+test('firstChunkMax >= maxLen changes nothing', () => {
+  const text = 'One sentence here. Another sentence there. And a third one follows.';
+  assert.deepEqual(chunkText(text, 60, 300), chunkText(text, 60));
+});
+
 // ---------------------------------------------------------------------------
 // Readable-text serializer (extraction). Duck-typed DOM nodes: the serializer
 // must not require a real browser DOM.

@@ -19,18 +19,36 @@ import { MODELS } from '../engines/registry';
 import type { SynthesisResult, TTSEngine } from '../engines/types';
 import type { WorkerRequest, WorkerResponse } from './engine-worker';
 
-/** How many chunks synthesis may run ahead of playback. */
-const LOOKAHEAD = 2;
+/** Keep this many seconds of audio synthesized ahead of the play position
+ *  (scaled by playback speed). A duration target — not a chunk count — because
+ *  chunks span ~2–20 s of audio: it lets spare synthesis capacity accumulate
+ *  real headroom that absorbs slow chunks instead of stalling mid-read.
+ *  60 s of 16-bit WAV is 3–5 MB depending on the engine's sample rate. */
+const BUFFER_AHEAD_SEC = 60;
+/** Cap for the opening chunk(s): the first spoken word waits on the first
+ *  synthesis, so the read opens with short chunks and ramps up. */
+const FIRST_CHUNK_CHARS = 80;
 /** Free model memory (and close the offscreen doc) after this long idle. */
 const IDLE_UNLOAD_MS = 5 * 60 * 1000;
 
 let engine: TTSEngine | null = null;
 let engineId: ModelId | null = null;
+/** In-flight engine load, shared so a 'prepare' fired during page extraction
+ *  and the 'speak' that follows it await one load instead of racing two
+ *  workers for the same model. */
+let engineLoad: {
+  modelId: ModelId;
+  promise: Promise<TTSEngine>;
+  onProgress: (detail: string) => void;
+} | null = null;
 let session = 0;
 let status: PlayerStatus = { state: 'idle', modelId: null };
 let releaseAll: (() => void) | null = null;
 /** Installed by an active speak(); jumps playback to a chunk index. */
 let seekTo: ((index: number) => void) | null = null;
+/** Installed by an active speak(); re-wakes the producer when the buffer
+ *  target changes (a speed change grows/shrinks it). */
+let wakeSynthesis: (() => void) | null = null;
 let downloading = false;
 const lastDownloadProgress = new Map<ModelId, DownloadProgress>();
 
@@ -62,6 +80,12 @@ async function handleCommand(cmd: PlayerCommand): Promise<void> {
     case 'set-speed':
       speed = cmd.speed;
       audio.playbackRate = speed;
+      // Faster playback needs a bigger synthesized-ahead buffer; let the
+      // producer re-evaluate its target.
+      wakeSynthesis?.();
+      break;
+    case 'prepare':
+      if (cmd.modelId) await prepare(cmd.modelId);
       break;
     case 'set-voice':
       // Applies to chunks not yet synthesized; a stopped read is not the
@@ -88,6 +112,7 @@ async function handleCommand(cmd: PlayerCommand): Promise<void> {
       break;
     case 'model-changed':
       stopAll();
+      abandonEngineLoad();
       disposeEngine();
       break;
     case 'get-status':
@@ -122,6 +147,73 @@ function disposeEngine(): void {
   engineId = null;
 }
 
+/** Drops an in-flight load whose model is no longer wanted; its engine is
+ *  disposed on arrival so the worker never outlives its usefulness. */
+function abandonEngineLoad(): void {
+  if (!engineLoad) return;
+  const stale = engineLoad;
+  engineLoad = null;
+  stale.onProgress = () => {};
+  stale.promise.then(
+    (eng) => eng.dispose(),
+    () => {},
+  );
+}
+
+/** Returns the ready engine for `modelId`, starting or joining a load as
+ *  needed. The latest caller owns the progress line. On success the engine is
+ *  installed as the module engine (unless a different-model load superseded
+ *  this one meanwhile — callers detect that via their session check). */
+async function ensureEngine(
+  modelId: ModelId,
+  onProgress: (detail: string) => void,
+): Promise<TTSEngine> {
+  if (engine && engineId === modelId) return engine;
+  if (engineLoad?.modelId !== modelId) {
+    abandonEngineLoad();
+    // Free the old model before loading the new one to keep peak memory low.
+    disposeEngine();
+    const fresh = { modelId, onProgress } as NonNullable<typeof engineLoad>;
+    fresh.promise = createWorkerEngine(modelId, (detail) => fresh.onProgress(detail));
+    engineLoad = fresh;
+  }
+  const load = engineLoad;
+  load.onProgress = onProgress;
+  try {
+    const eng = await load.promise;
+    if (engineLoad === load) {
+      engineLoad = null;
+      engine = eng;
+      engineId = modelId;
+    }
+    return eng;
+  } catch (err) {
+    if (engineLoad === load) engineLoad = null;
+    throw err;
+  }
+}
+
+/** Warm-up for a read that is still being extracted: loads the model so the
+ *  following 'speak' finds it ready. Never touches an active read. */
+async function prepare(modelId: ModelId): Promise<void> {
+  if (status.state !== 'idle' && status.state !== 'error') return;
+  if (engine && engineId === modelId) return;
+  // Any command that could interfere (speak, stop, model-changed) bumps the
+  // session, so `session === my` means this prepare still owns the status.
+  const my = session;
+  const meta = MODELS[modelId];
+  setStatus({ state: 'loading-model', modelId, detail: `Loading ${meta.displayName}…` });
+  try {
+    await ensureEngine(modelId, (detail) => {
+      if (session === my) setStatus({ state: 'loading-model', modelId, detail });
+    });
+  } catch {
+    // A failed warm-up stays quiet: speak() re-attempts the load and surfaces
+    // the error with full context (model-missing reconciliation included).
+  }
+  if (session === my) setStatus({ state: 'idle', modelId: engineId });
+}
+
 function stopAll(): void {
   session++;
   audio.pause();
@@ -129,6 +221,7 @@ function stopAll(): void {
   releaseAll?.();
   releaseAll = null;
   seekTo = null;
+  wakeSynthesis = null;
   if (transcript) {
     // Don't let a stopped read linger as "FINISHED" in the reader.
     transcript = null;
@@ -155,22 +248,32 @@ async function speak(
   const meta = MODELS[modelId];
   setStatus({ state: 'preparing', modelId, title, detail: 'Preparing audio…' });
 
+  // Chunk and publish the transcript before the model load: the reader can
+  // show the text right away instead of after seconds of engine loading.
+  activeVoice = voiceOverride ?? meta.defaultVoice;
+  const chunks = chunkText(text, meta.maxChunkChars, FIRST_CHUNK_CHARS);
+  if (chunks.length === 0) {
+    errorStatus('Nothing to read.', modelId);
+    return;
+  }
+  transcript = { chunks, title };
+  broadcast({ target: 'ui', type: 'transcript', chunks, title });
+
+  let eng: TTSEngine;
   try {
     if (!engine || engineId !== modelId) {
-      disposeEngine();
       setStatus({ state: 'loading-model', modelId, detail: `Loading ${meta.displayName}…`, title });
-      const eng = await createWorkerEngine(modelId, (detail) => {
-        if (session === my) setStatus({ state: 'loading-model', modelId, detail, title });
-      });
-      if (session !== my) {
-        eng.dispose();
-        return;
-      }
-      engine = eng;
-      engineId = modelId;
     }
+    eng = await ensureEngine(modelId, (detail) => {
+      if (session === my) setStatus({ state: 'loading-model', modelId, detail, title });
+    });
+    if (session !== my) return;
   } catch (err) {
     if (session === my) {
+      // The transcript was already published; a read that never starts must
+      // not leave it lingering in the reader.
+      transcript = null;
+      broadcast({ target: 'ui', type: 'transcript', chunks: [] });
       const message = errMsg(err);
       if (message.includes('missing from local storage')) {
         // Settings claimed the model was installed but its files are gone
@@ -187,20 +290,14 @@ async function speak(
     return;
   }
 
-  activeVoice = voiceOverride ?? meta.defaultVoice;
-  const chunks = chunkText(text, meta.maxChunkChars);
-  if (chunks.length === 0) {
-    errorStatus('Nothing to read.', modelId);
-    return;
-  }
-  transcript = { chunks, title };
-  broadcast({ target: 'ui', type: 'transcript', chunks, title });
-
-  // Producer/consumer: synthesis fills a LOOKAHEAD-sized window around the
-  // play position (not a sequential scan, so seeks jump straight to their
-  // target); each played chunk is dropped to keep memory flat and marked
-  // done, and a seek un-marks freed chunks so they re-synthesize.
+  // Producer/consumer: synthesis runs ahead of playback in the background
+  // until BUFFER_AHEAD_SEC (speed-scaled) of audio is buffered from the play
+  // position, so one slow chunk drains headroom instead of stalling the read.
+  // Played chunks are dropped to keep memory bounded, and a seek un-marks
+  // freed chunks so they re-synthesize.
   const blobs: (Blob | undefined)[] = [];
+  /** Seconds of audio per synthesized chunk; drives the buffer target. */
+  const durations: number[] = new Array<number>(chunks.length).fill(0);
   const synthesized: boolean[] = new Array<boolean>(chunks.length).fill(false);
   const skippedChunks = new Set<number>();
   let consecutiveFailures = 0;
@@ -215,8 +312,12 @@ async function speak(
     notifyAdvanced();
     playDone?.();
   };
+  wakeSynthesis = () => notifyAdvanced();
   seekTo = (index: number) => {
     pendingSeek = Math.max(0, Math.min(chunks.length - 1, Math.floor(index)));
+    // Buffered audio behind the target is dead weight — a forward jump would
+    // otherwise strand up to a full buffer of never-played blobs.
+    for (let j = 0; j < pendingSeek; j++) blobs[j] = undefined;
     // Freed (already-played) chunks must synthesize again; a previously
     // failed chunk gets another chance on explicit user intent.
     for (let j = 0; j < synthesized.length; j++) if (!blobs[j]) synthesized[j] = false;
@@ -230,24 +331,32 @@ async function speak(
   void (async () => {
     for (;;) {
       if (session !== my) return;
+      // Walk the contiguous buffered run from the play position; synthesize
+      // the first missing chunk unless the run already meets the target.
       let next = -1;
-      const end = Math.min(playIndex + LOOKAHEAD, chunks.length - 1);
-      for (let j = playIndex; j <= end; j++) {
-        if (!blobs[j] && !synthesized[j] && !skippedChunks.has(j)) {
-          next = j;
-          break;
+      let ahead = 0;
+      const target = BUFFER_AHEAD_SEC * speed;
+      for (let j = playIndex; j < chunks.length && ahead < target; j++) {
+        if (skippedChunks.has(j)) continue;
+        if (blobs[j]) {
+          ahead += durations[j];
+          continue;
         }
+        if (!synthesized[j]) next = j;
+        break;
       }
       if (next === -1) {
         if (playIndex >= chunks.length) return; // playback finished
-        // Window satisfied; wait for playback to advance or seek.
+        // Buffer satisfied; wait for playback to advance, a seek, or a
+        // speed change to move the target.
         await new Promise<void>((r) => (notifyAdvanced = r));
         continue;
       }
       try {
-        const result = await engine!.synthesize(expandForSpeech(chunks[next]), activeVoice);
+        const result = await eng.synthesize(expandForSpeech(chunks[next]), activeVoice);
         if (session !== my) return;
         blobs[next] = encodeWav(result.samples, result.sampleRate);
+        durations[next] = result.samples.length / result.sampleRate;
         synthesized[next] = true;
         consecutiveFailures = 0;
       } catch (err) {
@@ -295,7 +404,6 @@ async function speak(
     }
     setStatus({ state: 'speaking', modelId, title, chunkIndex: playIndex, chunkCount: chunks.length });
     const blob = blobs[playIndex]!;
-    blobs[playIndex] = undefined;
     await new Promise<void>((resolve) => {
       const url = URL.createObjectURL(blob);
       const done = () => {
@@ -316,11 +424,15 @@ async function speak(
     playDone = null;
     if (session !== my) return;
     if (pendingSeek !== null) continue;
+    // Freed only after playing (not before): a seek back to the current line
+    // then replays from the buffer instead of re-synthesizing.
+    blobs[playIndex] = undefined;
     playIndex++;
     notifyAdvanced();
   }
   releaseAll = null;
   seekTo = null;
+  wakeSynthesis = null;
   setStatus({ state: 'idle', modelId });
 }
 
@@ -399,8 +511,13 @@ function createWorkerEngine(
             },
             dispose() {
               // Terminating the worker reliably frees the model's WASM memory
-              // and aborts any in-flight inference.
+              // and aborts any in-flight inference. Terminated workers never
+              // answer, so settle the waiters or they (and everything their
+              // closures hold, like a session's audio buffer) leak.
               worker.terminate();
+              const err = new Error('Engine disposed');
+              for (const p of pending.values()) p.reject(err);
+              pending.clear();
             },
           });
           break;
