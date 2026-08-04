@@ -94,6 +94,13 @@ h1 {
     transform 0.45s ease;
   transform-origin: left center;
 }
+.line {
+  cursor: pointer;
+}
+.line:hover {
+  opacity: 0.75;
+  filter: none;
+}
 .line.near {
   filter: blur(1.6px);
 }

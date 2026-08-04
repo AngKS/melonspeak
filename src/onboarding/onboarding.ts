@@ -1,5 +1,8 @@
 import type { Message, ModelId, PlayerCommand } from '../lib/messages';
 import { getSettings, mutateSettings } from '../lib/settings';
+import { openSidebar, primeSidebar } from '../lib/sidebar';
+
+primeSidebar();
 import { MODELS, MODEL_IDS, loadEngineModule } from '../engines/registry';
 
 const SAMPLE_TEXT =
@@ -64,6 +67,7 @@ function buildCard(id: ModelId): HTMLElement {
 
   card.querySelector<HTMLButtonElement>('.try')!.addEventListener('click', (e) => {
     e.preventDefault();
+    openSidebar(); // synchronously, while this click's gesture is live
     sendPlayerCmd({ type: 'speak', text: SAMPLE_TEXT, title: 'Sample', modelId: id });
   });
   card.querySelector<HTMLButtonElement>('.remove')!.addEventListener('click', (e) => {

@@ -50,10 +50,11 @@ function setTranscript(chunks: string[] | null, title?: string): void {
     return;
   }
   titleEl.textContent = title || 'Untitled page';
-  for (const chunk of chunks) {
+  for (const [index, chunk] of chunks.entries()) {
     const div = document.createElement('div');
     div.className = 'line';
     div.textContent = chunk;
+    div.addEventListener('click', () => jumpToLine(index));
     lyricsEl.append(div);
     lines.push(div);
   }
@@ -98,6 +99,22 @@ for (const evt of ['wheel', 'touchmove'] as const) {
   }, { passive: true });
 }
 
+/** Click a line: jump an active read there, or restart a finished read
+ *  from that line. */
+function jumpToLine(index: number): void {
+  const state = lastStatus?.state;
+  if (state === 'speaking' || state === 'paused' || state === 'preparing') {
+    sendPlayerCmd({ type: 'seek', index });
+  } else if (chunkStrings.length > 0) {
+    sendPlayerCmd({
+      type: 'speak',
+      text: chunkStrings.slice(index).join('\n\n'),
+      title: titleEl.textContent || undefined,
+    });
+  }
+  setActiveLine(index); // immediate feedback; status broadcasts confirm
+}
+
 // -- Status -----------------------------------------------------------------
 
 function renderStatus(s: PlayerStatus): void {
@@ -115,14 +132,24 @@ function renderStatus(s: PlayerStatus): void {
     case 'paused':
       eyebrowEl.textContent = 'PAUSED';
       break;
+    case 'preparing':
+      eyebrowEl.textContent = (s.detail ?? 'PREPARING…').toUpperCase();
+      if (lines.length === 0) {
+        // Not "nothing is being read" — something is on its way.
+        lyricsEl.hidden = true;
+        emptyEl.style.display = 'none';
+      }
+      break;
     case 'loading-model':
       eyebrowEl.textContent = (s.detail ?? 'LOADING VOICE…').toUpperCase();
       break;
     case 'error':
       eyebrowEl.textContent = `⚠ ${s.detail ?? 'ERROR'}`;
+      target.fill(0);
       break;
     case 'idle':
       eyebrowEl.textContent = lines.length > 0 ? 'FINISHED' : 'NOW READING';
+      target.fill(0);
       if (lines.length > 0) {
         for (const line of lines) line.className = 'line past';
       } else {
@@ -246,6 +273,7 @@ function connectPort(): void {
         if (raw.status.chunkIndex !== undefined) setActiveLine(raw.status.chunkIndex);
       } else if (raw.type === 'levels') {
         for (let i = 0; i < BARS; i++) target[i] = raw.levels[i] ?? 0;
+        if (raw.levels.some((v) => v > 0.02)) lastAudioEnergyAt = performance.now();
       }
     });
     p.onDisconnect.addListener(() => {
@@ -261,7 +289,31 @@ function connectPort(): void {
   }
 }
 
+let lastAudioEnergyAt = 0;
+
+/** True while the pipeline is working but no audio is audible: preparing,
+ *  model loading, or a synthesis gap mid-read. */
+function isProcessing(): boolean {
+  const state = lastStatus?.state;
+  if (state === 'preparing' || state === 'loading-model') return true;
+  if (state === 'speaking') return performance.now() - lastAudioEnergyAt > 450;
+  return false;
+}
+
+/** Whimsical stand-in levels: a bright bump ping-pongs across the bars with
+ *  a gentle shimmer, so the visualizer reads as "thinking". */
+function processingWave(): void {
+  const t = performance.now() / 1000;
+  const center = (Math.sin(t * 1.15) * 0.5 + 0.5) * (BARS - 1);
+  for (let i = 0; i < BARS; i++) {
+    const d = i - center;
+    const bump = Math.exp((-d * d) / 5);
+    target[i] = 0.08 + 0.5 * bump * (0.85 + 0.15 * Math.sin(t * 6 + i * 0.8));
+  }
+}
+
 function draw(): void {
+  if (isProcessing()) processingWave();
   const dpr = devicePixelRatio || 1;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;

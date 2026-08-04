@@ -4,6 +4,7 @@ import type { ExtractResult } from './content/extract';
 import type { Message, ModelId, PlayerCommand, PlayerStatus } from './lib/messages';
 import { broadcast } from './lib/messages';
 import { getSettings, mutateSettings } from './lib/settings';
+import { openSidebar } from './lib/sidebar';
 
 const IS_CHROME_OFFSCREEN = typeof chrome.offscreen !== 'undefined';
 const MENU_ID = 'melonspeak-speak';
@@ -20,24 +21,28 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
 });
 
-// Chrome ≥116: surface the Now Reading view in the side panel whenever a
-// read starts. sidePanel.open() only works while the triggering user gesture
-// is still live, so it runs at command receipt — before extraction. On
-// browsers without chrome.sidePanel (Firefox) the popup stays the reading
-// surface and this is a no-op.
-function openReadingPanel(tabId: number | undefined): void {
-  if (tabId === undefined || typeof chrome.sidePanel?.open !== 'function') return;
-  try {
-    void chrome.sidePanel.open({ tabId }).catch(() => {});
-  } catch {
-    // Gesture expired or panel unavailable; reading works without it.
-  }
-}
-
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== MENU_ID || tab?.id === undefined) return;
-  openReadingPanel(tab.id);
+  // contextMenus.onClicked is a direct user-action handler — the only place
+  // the background may open the sidebar (UI pages open it from their own
+  // click handlers; runtime.onMessage cannot, crbug.com/355266358). No await
+  // may precede this call or the gesture is spent.
+  openSidebar(tab.id);
   void readTab(tab.id, 'selection', info.selectionText);
+});
+
+// Stop reading when the tab being read is closed. The tab id lives in
+// chrome.storage.session (not a background variable) because Chrome can
+// evict the MV3 service worker mid-read and this listener must still
+// recognise the tab afterwards.
+const READING_TAB_KEY = 'readingTab';
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void chrome.storage.session.get(READING_TAB_KEY).then((stored) => {
+    if (stored[READING_TAB_KEY] !== tabId) return;
+    void chrome.storage.session.remove(READING_TAB_KEY);
+    void deliverToPlayer({ type: 'stop' });
+  });
 });
 
 // The player context can't touch chrome.storage or chrome.action, so its
@@ -87,12 +92,6 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
   }
   if (msg.target !== 'background') return;
   if (msg.type === 'player-cmd') {
-    if (msg.cmd.type === 'speak') {
-      // e.g. onboarding's "Hear a sample": show the reading view for it too.
-      void chrome.tabs
-        .query({ active: true, lastFocusedWindow: true })
-        .then(([tab]) => openReadingPanel(tab?.id));
-    }
     void deliverToPlayer(msg.cmd);
   } else if (msg.type === 'read-page' || msg.type === 'read-selection') {
     void readActiveTab(msg.type === 'read-page' ? 'page' : 'selection');
@@ -105,11 +104,16 @@ async function readActiveTab(mode: 'page' | 'selection'): Promise<void> {
     errorStatus('No active tab to read.');
     return;
   }
-  openReadingPanel(tab.id);
   await readTab(tab.id, mode);
 }
 
 async function readTab(tabId: number, mode: 'page' | 'selection', fallbackText?: string): Promise<void> {
+  // Immediate feedback: extraction plus first synthesis can take seconds.
+  broadcast({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'preparing', modelId: null, detail: 'Reading page…' },
+  });
   let result: ExtractResult | undefined;
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content/extract.js'] });
@@ -139,6 +143,7 @@ async function readTab(tabId: number, mode: 'page' | 'selection', fallbackText?:
     text = text.slice(0, MAX_CHARS);
     title += ' (first part)';
   }
+  await chrome.storage.session.set({ [READING_TAB_KEY]: tabId });
   await deliverToPlayer({ type: 'speak', text, title });
 }
 

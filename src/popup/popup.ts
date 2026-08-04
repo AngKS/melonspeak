@@ -1,6 +1,9 @@
 import type { Message, ModelId, PlayerCommand, PlayerStatus } from '../lib/messages';
 import { getSettings, mutateSettings, updateSettings } from '../lib/settings';
+import { openSidebar, primeSidebar } from '../lib/sidebar';
 import { MODELS, MODEL_IDS } from '../engines/registry';
+
+primeSidebar();
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -71,11 +74,13 @@ async function init(): Promise<void> {
     });
 
     $('read-page').addEventListener('click', () => {
+      openSidebar(); // synchronously, while this click's gesture is live
       void chrome.runtime
         .sendMessage({ target: 'background', type: 'read-page' } satisfies Message)
         .catch(() => {});
     });
     $('read-selection').addEventListener('click', () => {
+      openSidebar();
       void chrome.runtime
         .sendMessage({ target: 'background', type: 'read-selection' } satisfies Message)
         .catch(() => {});
@@ -83,22 +88,11 @@ async function init(): Promise<void> {
     $('pause').addEventListener('click', () => sendPlayerCmd({ type: 'pause' }));
     $('resume').addEventListener('click', () => sendPlayerCmd({ type: 'resume' }));
     $('stop').addEventListener('click', () => sendPlayerCmd({ type: 'stop' }));
-    $('open-reader').addEventListener('click', async () => {
-      // Prefer the side panel (Chrome ≥116); it must open while this click's
-      // gesture is live. Firefox has no sidePanel — fall back to a tab.
-      if (typeof chrome.sidePanel?.open === 'function') {
-        try {
-          const win = await chrome.windows.getCurrent();
-          if (win.id !== undefined) {
-            await chrome.sidePanel.open({ windowId: win.id });
-            window.close();
-            return;
-          }
-        } catch {
-          // fall through to the tab fallback
-        }
+    $('open-reader').addEventListener('click', () => {
+      if (!openSidebar()) {
+        // No sidebar API in this browser: fall back to a reader tab.
+        void chrome.tabs.create({ url: chrome.runtime.getURL('reader/reader.html') });
       }
-      void chrome.tabs.create({ url: chrome.runtime.getURL('reader/reader.html') });
       window.close();
     });
 
@@ -139,9 +133,9 @@ function renderStatus(s: PlayerStatus): void {
   if (s.state === 'error') {
     statusEl.hidden = false;
     statusEl.textContent = s.detail ?? 'Something went wrong.';
-  } else if (s.state === 'loading-model') {
+  } else if (s.state === 'loading-model' || s.state === 'preparing') {
     statusEl.hidden = false;
-    statusEl.textContent = s.detail ?? 'Loading voice model…';
+    statusEl.textContent = s.detail ?? (s.state === 'preparing' ? 'Preparing…' : 'Loading voice model…');
   } else {
     statusEl.hidden = true;
   }

@@ -122,6 +122,31 @@ const popupState = await popup.evaluate(() => ({
 console.log('popup state:', JSON.stringify(popupState));
 if (!popupState.activeVisible) errors.push('popup transport not visible while speaking');
 
+// A preparing status must have been broadcast before speaking started.
+const sawPreparing = await monitor.evaluate(() =>
+  window.__statuses.some((s) => s.state === 'preparing'),
+);
+console.log('saw preparing state:', sawPreparing);
+if (!sawPreparing) errors.push('no preparing status was broadcast before speaking');
+
+// Click-to-jump: click the first line; whether the read is still going or
+// already finished, playback must land on chunk 0 of a transcript.
+const statusMark = await monitor.evaluate(() => window.__statuses.length);
+await reader.evaluate(() => document.querySelector('.line').click());
+const tSeek = Date.now();
+let jumped = false;
+while (Date.now() - tSeek < 45000) {
+  jumped = await monitor.evaluate(
+    (mark) =>
+      window.__statuses.slice(mark).some((s) => s.state === 'speaking' && s.chunkIndex === 0),
+    statusMark,
+  );
+  if (jumped) break;
+  await new Promise((r) => setTimeout(r, 500));
+}
+console.log('click-to-jump reached chunk 0:', jumped);
+if (!jumped) errors.push('clicking a transcript line did not move playback there');
+
 // Stop and confirm idle.
 await monitor.evaluate(() => {
   chrome.runtime.sendMessage({ target: 'background', type: 'player-cmd', cmd: { type: 'stop' } });

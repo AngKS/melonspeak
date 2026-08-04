@@ -28,6 +28,8 @@ let engineId: ModelId | null = null;
 let session = 0;
 let status: PlayerStatus = { state: 'idle', modelId: null };
 let releaseAll: (() => void) | null = null;
+/** Installed by an active speak(); jumps playback to a chunk index. */
+let seekTo: ((index: number) => void) | null = null;
 let downloading = false;
 const lastDownloadProgress = new Map<ModelId, DownloadProgress>();
 
@@ -64,6 +66,9 @@ async function handleCommand(cmd: PlayerCommand): Promise<void> {
       // Applies to chunks not yet synthesized; a stopped read is not the
       // right price for a voice change.
       if (cmd.modelId === engineId) activeVoice = cmd.voice;
+      break;
+    case 'seek':
+      seekTo?.(cmd.index);
       break;
     case 'pause':
       if (status.state === 'speaking') {
@@ -122,6 +127,7 @@ function stopAll(): void {
   audio.removeAttribute('src');
   releaseAll?.();
   releaseAll = null;
+  seekTo = null;
   if (transcript) {
     // Don't let a stopped read linger as "FINISHED" in the reader.
     transcript = null;
@@ -146,6 +152,7 @@ async function speak(
     return;
   }
   const meta = MODELS[modelId];
+  setStatus({ state: 'preparing', modelId, title, detail: 'Preparing audio…' });
 
   try {
     if (!engine || engineId !== modelId) {
@@ -188,12 +195,16 @@ async function speak(
   transcript = { chunks, title };
   broadcast({ target: 'ui', type: 'transcript', chunks, title });
 
-  // Producer/consumer: synthesis runs at most LOOKAHEAD chunks ahead of
-  // playback; each played chunk is dropped to keep memory flat.
+  // Producer/consumer: synthesis fills a LOOKAHEAD-sized window around the
+  // play position (not a sequential scan, so seeks jump straight to their
+  // target); each played chunk is dropped to keep memory flat and marked
+  // done, and a seek un-marks freed chunks so they re-synthesize.
   const blobs: (Blob | undefined)[] = [];
+  const synthesized: boolean[] = new Array<boolean>(chunks.length).fill(false);
   const skippedChunks = new Set<number>();
   let consecutiveFailures = 0;
   let playIndex = 0;
+  let pendingSeek: number | null = null;
   let synthError: string | null = null;
   let notifyProduced: () => void = () => {};
   let notifyAdvanced: () => void = () => {};
@@ -203,24 +214,47 @@ async function speak(
     notifyAdvanced();
     playDone?.();
   };
+  seekTo = (index: number) => {
+    pendingSeek = Math.max(0, Math.min(chunks.length - 1, Math.floor(index)));
+    // Freed (already-played) chunks must synthesize again; a previously
+    // failed chunk gets another chance on explicit user intent.
+    for (let j = 0; j < synthesized.length; j++) if (!blobs[j]) synthesized[j] = false;
+    skippedChunks.delete(pendingSeek);
+    audio.pause();
+    notifyProduced();
+    notifyAdvanced();
+    playDone?.();
+  };
 
   void (async () => {
-    for (let i = 0; i < chunks.length; i++) {
-      while (session === my && i > playIndex + LOOKAHEAD) {
-        await new Promise<void>((r) => (notifyAdvanced = r));
-      }
+    for (;;) {
       if (session !== my) return;
+      let next = -1;
+      const end = Math.min(playIndex + LOOKAHEAD, chunks.length - 1);
+      for (let j = playIndex; j <= end; j++) {
+        if (!blobs[j] && !synthesized[j] && !skippedChunks.has(j)) {
+          next = j;
+          break;
+        }
+      }
+      if (next === -1) {
+        if (playIndex >= chunks.length) return; // playback finished
+        // Window satisfied; wait for playback to advance or seek.
+        await new Promise<void>((r) => (notifyAdvanced = r));
+        continue;
+      }
       try {
-        const result = await engine!.synthesize(expandForSpeech(chunks[i]), activeVoice);
+        const result = await engine!.synthesize(expandForSpeech(chunks[next]), activeVoice);
         if (session !== my) return;
-        blobs[i] = encodeWav(result.samples, result.sampleRate);
+        blobs[next] = encodeWav(result.samples, result.sampleRate);
+        synthesized[next] = true;
         consecutiveFailures = 0;
       } catch (err) {
         if (session !== my) return;
         // One unpronounceable token must not end the whole read (OOV words
         // can crash engines outright); give up only on repeated failures.
         if (++consecutiveFailures >= 3) throw err;
-        skippedChunks.add(i);
+        skippedChunks.add(next);
       }
       notifyProduced();
     }
@@ -229,22 +263,32 @@ async function speak(
     notifyProduced();
   });
 
-  setStatus({ state: 'speaking', modelId, title, chunkIndex: 0, chunkCount: chunks.length });
-  for (playIndex = 0; playIndex < chunks.length; playIndex++) {
+  // Stay in 'preparing' until the first chunk is actually ready to play —
+  // the reader animates the visualizer during this window.
+  setStatus({ state: 'preparing', modelId, title, detail: 'Preparing audio…' });
+  while (playIndex < chunks.length) {
+    if (pendingSeek !== null) {
+      playIndex = pendingSeek;
+      pendingSeek = null;
+      notifyAdvanced(); // retarget the producer's window
+    }
     while (
       session === my &&
       !blobs[playIndex] &&
       !skippedChunks.has(playIndex) &&
-      !synthError
+      !synthError &&
+      pendingSeek === null
     ) {
       await new Promise<void>((r) => (notifyProduced = r));
     }
     if (session !== my) return;
+    if (pendingSeek !== null) continue;
     if (synthError) {
       errorStatus(`Speech synthesis failed: ${synthError}`, modelId);
       return;
     }
     if (skippedChunks.has(playIndex)) {
+      playIndex++;
       notifyAdvanced();
       continue;
     }
@@ -270,9 +314,12 @@ async function speak(
     });
     playDone = null;
     if (session !== my) return;
+    if (pendingSeek !== null) continue;
+    playIndex++;
     notifyAdvanced();
   }
   releaseAll = null;
+  seekTo = null;
   setStatus({ state: 'idle', modelId });
 }
 
@@ -290,6 +337,7 @@ let keepAliveUrl: string | null = null;
 function updateKeepAlive(): void {
   const busy =
     downloading ||
+    status.state === 'preparing' ||
     status.state === 'loading-model' ||
     status.state === 'speaking' ||
     status.state === 'paused';

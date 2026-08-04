@@ -19,6 +19,14 @@
   "background": {
     "page": "background.html"
   },
+  "sidebar_action": {
+    "default_title": "MelonSpeak — Now Reading",
+    "default_panel": "reader/reader.html",
+    "default_icon": {
+      "48": "icons/icon48.png"
+    },
+    "open_at_install": false
+  },
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "MelonSpeak",

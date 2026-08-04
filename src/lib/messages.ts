@@ -2,6 +2,9 @@ export type ModelId = 'kokoro' | 'supertonic' | 'piper';
 
 export type PlayerState =
   | 'idle'
+  /** Between the user's request and the first audible audio: extraction,
+   *  chunking, first-chunk synthesis. */
+  | 'preparing'
   | 'loading-model'
   | 'speaking'
   | 'paused'
@@ -40,6 +43,8 @@ export type PlayerCommand =
   | { type: 'model-changed' }
   | { type: 'set-voice'; modelId: ModelId; voice: string }
   | { type: 'set-speed'; speed: number }
+  /** Jump playback to a chunk of the current transcript. */
+  | { type: 'seek'; index: number }
   | { type: 'download'; modelIds: ModelId[] };
 
 export type Message =
