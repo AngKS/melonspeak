@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "MelonSpeak",
+  "version": "0.1.0",
+  "description": "Read any page aloud with fully offline neural text-to-speech. Nothing ever leaves your device.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "offscreen",
+    "sidePanel"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "reader/reader.html"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "MelonSpeak",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}

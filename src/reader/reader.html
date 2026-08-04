@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Now Reading — MelonSpeak</title>
+    <link rel="stylesheet" href="reader.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="../icons/icon48.png" alt="" width="34" height="34" />
+        <div class="head-text">
+          <p id="eyebrow">NOW READING</p>
+          <h1 id="title">MelonSpeak</h1>
+        </div>
+      </header>
+
+      <canvas id="viz"></canvas>
+
+      <section id="lyrics" aria-live="off"></section>
+
+      <div id="empty">
+        <p>Nothing is being read right now.</p>
+        <p class="hint">
+          Open any page and press <strong>Read page</strong> in the MelonSpeak popup —
+          or highlight text, right-click, and choose <strong>Speak content</strong>.
+        </p>
+      </div>
+
+      <footer id="bottom">
+        <div id="transport" hidden>
+          <button id="pause" title="Pause">⏸</button>
+          <button id="resume" title="Resume" hidden>▶</button>
+          <button id="stop" title="Stop">⏹</button>
+        </div>
+        <div id="model-bar">
+          <div id="model-menu" hidden></div>
+          <button id="model-btn" title="Voice model">
+            <span class="label">Voice model</span>
+            <span id="model-name">—</span>
+            <span class="chev">▾</span>
+          </button>
+        </div>
+      </footer>
+    </main>
+    <script type="module" src="reader.js"></script>
+  </body>
+</html>

@@ -1,0 +1,79 @@
+export type ModelId = 'kokoro' | 'supertonic' | 'piper';
+
+export type PlayerState =
+  | 'idle'
+  | 'loading-model'
+  | 'speaking'
+  | 'paused'
+  | 'error';
+
+export interface PlayerStatus {
+  state: PlayerState;
+  modelId: ModelId | null;
+  /** Human-readable detail, e.g. an error message or "Loading Kokoro-82M…" */
+  detail?: string;
+  chunkIndex?: number;
+  chunkCount?: number;
+  /** Title of what is being read */
+  title?: string;
+}
+
+export interface DownloadProgress {
+  modelId: ModelId;
+  /** Bytes downloaded across all files of this model */
+  loaded: number;
+  total: number;
+  file?: string;
+  done: boolean;
+  error?: string;
+}
+
+// The player context (offscreen document on Chrome) has no chrome.storage
+// access, so 'speak' arrives pre-enriched by the background script with the
+// resolved model/voice/speed from settings.
+export type PlayerCommand =
+  | { type: 'speak'; text: string; title?: string; modelId?: ModelId; voice?: string; speed?: number }
+  | { type: 'pause' }
+  | { type: 'resume' }
+  | { type: 'stop' }
+  | { type: 'get-status' }
+  | { type: 'model-changed' }
+  | { type: 'set-voice'; modelId: ModelId; voice: string }
+  | { type: 'set-speed'; speed: number }
+  | { type: 'download'; modelIds: ModelId[] };
+
+export type Message =
+  | { target: 'player'; cmd: PlayerCommand }
+  | { target: 'background'; type: 'read-page' }
+  | { target: 'background'; type: 'read-selection' }
+  | { target: 'background'; type: 'player-cmd'; cmd: PlayerCommand }
+  | { target: 'ui'; type: 'status'; status: PlayerStatus }
+  | { target: 'ui'; type: 'download-progress'; progress: DownloadProgress }
+  | { target: 'ui'; type: 'transcript'; chunks: string[]; title?: string }
+  /** The player found a model's local files gone; settings must be reconciled. */
+  | { target: 'ui'; type: 'model-missing'; modelId: ModelId };
+
+/** Port name for the visualizer level stream (player → Now Reading view). */
+export const VIZ_PORT = 'melonspeak-viz';
+
+/** Messages sent over the visualizer port. */
+export type VizMessage =
+  | { type: 'snapshot'; status: PlayerStatus; chunks: string[] | null; title?: string }
+  | { type: 'levels'; levels: number[] };
+
+/** Fire-and-forget broadcast; swallows "no receiving end" errors.
+ *
+ * Also invokes the same-page sink if one is registered: runtime.sendMessage
+ * is never delivered to the sender's own page, so on Firefox — where the
+ * player and the background script share one background page — the
+ * background's ui-message handling (settings persistence, error badge) would
+ * otherwise never run. The background registers the sink; contexts without it
+ * (Chrome offscreen document, UI pages) rely on sendMessage alone. */
+export function broadcast(msg: Message): void {
+  try {
+    void chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch {
+    /* context shutting down */
+  }
+  (globalThis as { __melonBroadcastLocal?: (m: Message) => void }).__melonBroadcastLocal?.(msg);
+}
