@@ -114,7 +114,12 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
     if (msg.cmd.type === 'stop') void setReadingTab(null);
     void deliverToPlayer(msg.cmd);
   } else if (msg.type === 'read-page' || msg.type === 'read-selection') {
-    void readActiveTab(msg.type === 'read-page' ? 'page' : 'selection');
+    const mode = msg.type === 'read-page' ? 'page' : 'selection';
+    // The reading view names the tab outright: it lives in a browser window
+    // and knows that window's active tab, which lastFocusedWindow cannot be
+    // relied on to reproduce.
+    if (msg.tabId !== undefined) void readTab(msg.tabId, mode);
+    else void readActiveTab(mode);
   } else if (msg.type === 'installed-state') {
     void reconcileInstalled(msg.installed);
   } else if (msg.type === 'clear-reading-tab') {

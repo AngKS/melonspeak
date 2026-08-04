@@ -22,6 +22,7 @@ new entry points into the existing `read-page` / `read-selection` paths.
 | Seeing the highlight | A watcher content script injected on demand, reporting over a `runtime.Port`. Not polling, not a declared content script. |
 | Which panel states show cards | Idle-with-nothing (`full`), and after a read finishes or its tab closed (`compact`, under the dimmed transcript). |
 | Card content | Read-page card carries the live tab title; highlight card carries a 3-line quote, word count and duration estimate. |
+| Repeating a finished read | A third card, in `compact` only, replaying the transcript already in memory. |
 | What actually gets read | Re-extracted from the page on click. The card preview is never the payload. |
 | Highlights inside iframes | Not detected. Matches how `extract.ts` already reads selections. |
 
@@ -112,9 +113,22 @@ land in the generic error.
 arrives, then fills with the quote and metrics, switches to a solid green-tinted
 border, and pulses once. The pulse is behind `prefers-reduced-motion`.
 
-Both cards send their existing background message with an explicit `tabId`, so
-the panel targets the active tab of *its own* window rather than having the
-background re-derive one from `lastFocusedWindow`.
+**Read this again** appears only in `compact`, and only while `chunkStrings`
+still holds a transcript. It re-speaks that retained text rather than
+re-extracting the page, which is what makes it work after the source tab has
+been closed — the `⊘ PAGE CLOSED` state can still replay what it was reading.
+In `compact` it takes the primary red and the page card steps back to neutral,
+since repeating what you just heard is the likelier intent than starting the
+page over.
+
+Its subtitle is deliberately *not* the title: the header carries that two
+lines above, and the page card often carries it too, so three identical
+subtitles would say nothing. It describes the transcript instead — "From the
+top · 3 lines".
+
+Both read cards send their existing background message with an explicit
+`tabId`, so the panel targets the active tab of *its own* window rather than
+having the background re-derive one from `lastFocusedWindow`.
 
 Two fixes to the stale state visible in the screenshot: in `full` mode the
 header resets to "MelonSpeak" under a `READY` eyebrow instead of holding the
@@ -127,8 +141,17 @@ right-click menu.
 - `scripts/test.mjs` gains assertions for `computeCtaView` across every row of
   the table above, and for `summarizeSelection` (clamping, word counting,
   speed scaling, empty input).
-- `scripts/smoke.mjs` gains a case that opens the panel on a fixture page,
-  selects text, and asserts the card lights up with the right word count.
+- `scripts/smoke.mjs` gains a case that serves a fixture page over local http,
+  highlights it, and asserts the card lights up with the right quote and word
+  count, goes dormant when the selection clears, and that a finished read
+  yields the compact layout with the replay card.
+
+One trap worth recording: in that smoke test the reading view is a *background*
+tab, because the fixture has to be the active one for the view to look at it.
+Background tabs do not advance CSS transitions, so a card mid-transition
+freezes at its old colour and `getComputedStyle` reports it. Assert on classes,
+`disabled` and text — never on colours — unless the view has been brought to
+the front first.
 
 ## Known limitations
 

@@ -1,14 +1,30 @@
 // The "Now Reading" view: live audio visualizer + Apple Music-style lyrics
 // (auto-scrolling, current line highlighted, neighbors faded/blurred).
-import { VIZ_PORT } from '../lib/messages';
-import type { Message, ModelId, PlayerCommand, PlayerStatus, VizMessage } from '../lib/messages';
+import { SELECTION_PORT, VIZ_PORT } from '../lib/messages';
+import type {
+  Message,
+  ModelId,
+  PlayerCommand,
+  PlayerStatus,
+  SelectionMessage,
+  VizMessage,
+} from '../lib/messages';
 import type { ReadingTabState } from '../lib/reading-tab';
 import { READING_TAB_KEY, computeBadge } from '../lib/reading-tab';
+import { computeCtaView, formatDuration, isReadableUrl } from '../lib/cta-state';
 import { getSettings, mutateSettings, onSettingsChanged } from '../lib/settings';
 import { MODELS, MODEL_IDS } from '../engines/registry';
 
 const lyricsEl = document.getElementById('lyrics') as HTMLElement;
-const emptyEl = document.getElementById('empty') as HTMLElement;
+const ctaEl = document.getElementById('cta') as HTMLElement;
+const pageCard = document.getElementById('cta-page') as HTMLButtonElement;
+const pageSubEl = document.getElementById('cta-page-sub') as HTMLElement;
+const selectionCard = document.getElementById('cta-selection') as HTMLButtonElement;
+const selectionSubEl = document.getElementById('cta-selection-sub') as HTMLElement;
+const selectionQuoteEl = document.getElementById('cta-selection-quote') as HTMLElement;
+const selectionMetaEl = document.getElementById('cta-selection-meta') as HTMLElement;
+const replayCard = document.getElementById('cta-replay') as HTMLButtonElement;
+const replaySubEl = document.getElementById('cta-replay-sub') as HTMLElement;
 const transportEl = document.getElementById('transport') as HTMLElement;
 const titleEl = document.getElementById('title') as HTMLElement;
 const eyebrowEl = document.getElementById('eyebrow') as HTMLElement;
@@ -29,6 +45,10 @@ let lastStatus: PlayerStatus | null = null;
 let readingTabId: number | null = null;
 /** Active tab of *this* view's window. Null in a context without one. */
 let activeTabId: number | null = null;
+/** Only populated where a host permission matches the tab, which is exactly
+ *  where the cards can do anything — so "missing" and "unreadable" coincide. */
+let activeTabTitle: string | undefined;
+let activeTabUrl: string | undefined;
 let myWindowId: number | null = null;
 /** Set when the background ended the read because the tab closed. */
 let stopReason: 'tab-closed' | null = null;
@@ -100,10 +120,58 @@ headEl.addEventListener('keydown', (e) => {
   void returnToReadingTab();
 });
 
+/** Guards against a slow tabs.get for tab A landing after the user has
+ *  already moved to tab B. */
+let activeTabSeq = 0;
+
+async function setActiveTab(tabId: number | null): Promise<void> {
+  const seq = ++activeTabSeq;
+  activeTabId = tabId;
+  activeTabTitle = undefined;
+  activeTabUrl = undefined;
+  // The watcher must let go of the old tab immediately. The card, by
+  // contrast, is left showing the outgoing page for the millisecond or two
+  // tabs.get takes — flashing "this page can't be read" at every tab switch
+  // would be worse than being briefly out of date.
+  tabResolved = false;
+  renderBadge();
+  syncSelectionWatch();
+  if (tabId === null) {
+    tabResolved = true;
+    renderPageCard();
+    return;
+  }
+  let tab: chrome.tabs.Tab | undefined;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    // Tab closed while we asked.
+  }
+  if (seq !== activeTabSeq) return; // a newer switch already won
+  activeTabTitle = tab?.title;
+  activeTabUrl = tab?.url;
+  tabResolved = true;
+  renderPageCard();
+  syncSelectionWatch();
+}
+
 chrome.tabs.onActivated.addListener((info) => {
   if (myWindowId !== null && info.windowId !== myWindowId) return;
-  activeTabId = info.tabId;
-  renderBadge();
+  void setActiveTab(info.tabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tabId !== activeTabId) return;
+  if (changeInfo.url !== undefined || changeInfo.title !== undefined) {
+    activeTabUrl = tab.url;
+    activeTabTitle = tab.title;
+    renderPageCard();
+  }
+  // A finished navigation replaced the document the watcher was living in.
+  if (changeInfo.status === 'complete') {
+    stopSelectionWatch();
+    syncSelectionWatch();
+  }
 });
 
 function applyReadingTab(state: ReadingTabState | undefined): void {
@@ -112,6 +180,7 @@ function applyReadingTab(state: ReadingTabState | undefined): void {
   // ordering is what lets setTranscript() know to keep the lyrics.
   stopReason = state?.reason === 'tab-closed' ? 'tab-closed' : null;
   lyricsEl.classList.toggle('stopped', stopReason === 'tab-closed');
+  renderView();
   renderBadge();
 }
 
@@ -141,11 +210,11 @@ async function initTabTracking(): Promise<void> {
         ? { active: true, windowId: myWindowId }
         : { active: true, currentWindow: true },
     );
-    activeTabId = tab?.id ?? null;
+    await setActiveTab(tab?.id ?? null);
   } catch {
     // No window context; the badge stays hidden rather than guessing.
+    renderBadge();
   }
-  renderBadge();
 }
 
 // -- Transcript / lyrics ----------------------------------------------------
@@ -172,8 +241,8 @@ function setTranscript(chunks: string[] | null, title?: string): void {
   chunkStrings = chunks ? [...chunks] : [];
   activeIndex = -1;
   if (!chunks || chunks.length === 0) {
-    // Stop broadcasts an empty transcript; fall back to the empty state.
-    showLyrics(false);
+    // Stop broadcasts an empty transcript; fall back to the cards.
+    renderView();
     return;
   }
   titleEl.textContent = title || 'Untitled page';
@@ -185,7 +254,7 @@ function setTranscript(chunks: string[] | null, title?: string): void {
     lyricsEl.append(div);
     lines.push(div);
   }
-  showLyrics(true);
+  renderView();
   if (
     lastStatus &&
     (lastStatus.state === 'speaking' || lastStatus.state === 'paused') &&
@@ -195,9 +264,31 @@ function setTranscript(chunks: string[] | null, title?: string): void {
   }
 }
 
-function showLyrics(show: boolean): void {
-  lyricsEl.hidden = !show;
-  emptyEl.style.display = show ? 'none' : '';
+/** Who owns the middle of the panel: the transcript, the cards, or both. */
+function renderView(): void {
+  const view = computeCtaView({
+    playerState: lastStatus?.state ?? 'idle',
+    hasLines: lines.length > 0,
+    stopReason,
+  });
+  lyricsEl.hidden = lines.length === 0;
+  ctaEl.hidden = view === 'hidden';
+  ctaEl.classList.toggle('full', view === 'full');
+  ctaEl.classList.toggle('compact', view === 'compact');
+
+  // Nothing has been read, so the header must not keep advertising the last
+  // article under "NOW READING".
+  if (view === 'full') titleEl.textContent = 'MelonSpeak';
+
+  // Replaying needs the text, which outlives the tab it was taken from.
+  replayCard.hidden = view !== 'compact' || chunkStrings.length === 0;
+  // Not the title — the header is showing that two lines above, and the page
+  // card may well be showing it too. What distinguishes this card is that it
+  // replays the transcript that is already here.
+  const n = chunkStrings.length;
+  replaySubEl.textContent = `From the top · ${n} ${n === 1 ? 'line' : 'lines'}`;
+
+  syncSelectionWatch();
 }
 
 function setActiveLine(index: number): void {
@@ -242,6 +333,214 @@ function jumpToLine(index: number): void {
   setActiveLine(index); // immediate feedback; status broadcasts confirm
 }
 
+// -- Call-to-action cards ---------------------------------------------------
+
+/** Chrome grants <all_urls> at install; Firefox MV3 makes it opt-in, so the
+ *  cards have to be able to say so and ask. */
+let hasHostAccess = true;
+let accessRefused = false;
+/** False until we have actually looked at the active tab, so an unknown tab
+ *  is never reported as an unreadable one. */
+let tabResolved = false;
+/** Last report from the watcher; kept so a speed change can re-render the
+ *  duration without waiting for the user to re-highlight. */
+let selection: SelectionMessage | null = null;
+let speed = 1;
+
+function renderPageCard(): void {
+  if (!hasHostAccess) {
+    pageCard.disabled = false;
+    pageCard.classList.add('needs-access');
+    pageCard.classList.remove('dormant');
+    pageSubEl.textContent = accessRefused
+      ? 'Enable access for all sites in about:addons → MelonSpeak → Permissions'
+      : 'Give MelonSpeak access to page content';
+    return;
+  }
+  pageCard.classList.remove('needs-access');
+  if (!tabResolved) {
+    // Still enabled: the background resolves the tab itself when we send no
+    // id, so an early click is answered rather than swallowed.
+    pageCard.disabled = false;
+    pageCard.classList.remove('dormant');
+    pageSubEl.textContent = '';
+    return;
+  }
+  const readable = isReadableUrl(activeTabUrl);
+  pageCard.disabled = !readable;
+  pageCard.classList.toggle('dormant', !readable);
+  pageSubEl.textContent = readable
+    ? (activeTabTitle ?? activeTabUrl ?? '')
+    : "This page can't be read";
+}
+
+function renderSelectionCard(): void {
+  if (!hasHostAccess) {
+    selectionCard.disabled = false;
+    selectionCard.classList.add('needs-access');
+    selectionCard.classList.remove('dormant');
+    selectionSubEl.hidden = false;
+    selectionSubEl.textContent = accessRefused
+      ? 'Enable access for all sites to see what you highlight'
+      : 'Give MelonSpeak access to see what you highlight';
+    selectionQuoteEl.hidden = true;
+    selectionMetaEl.hidden = true;
+    return;
+  }
+  selectionCard.classList.remove('needs-access');
+  const sel = selection;
+  const lit = sel !== null && sel.words > 0;
+  // Removing .dormant is what runs the wake animation, so this must only
+  // change when the selection appears or goes away — not on every keystroke
+  // of a growing one.
+  selectionCard.disabled = !lit;
+  selectionCard.classList.toggle('dormant', !lit);
+  selectionSubEl.hidden = lit;
+  selectionQuoteEl.hidden = !lit;
+  selectionMetaEl.hidden = !lit;
+  if (!lit) return;
+  selectionQuoteEl.textContent = `“${sel.quote}”`;
+  const words = `${sel.words} ${sel.words === 1 ? 'word' : 'words'}`;
+  selectionMetaEl.textContent = `${words} · ${formatDuration(sel.words, speed)}`;
+}
+
+function setSelection(next: SelectionMessage | null): void {
+  selection = next;
+  renderSelectionCard();
+}
+
+// -- Watching the page's highlight ------------------------------------------
+// Injected only while the cards are up, into the tab they refer to. The port
+// is what lets the injected script know when to stop: see selection-watch.ts.
+
+let selectionPort: chrome.runtime.Port | null = null;
+let watchedTabId: number | null = null;
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== SELECTION_PORT) return;
+  const tabId = port.sender?.tab?.id;
+  // A watcher from a tab we have since moved away from, or one racing our own
+  // teardown. Dropping the port makes it unhook itself.
+  if (tabId === undefined || tabId !== watchedTabId) {
+    port.disconnect();
+    return;
+  }
+  selectionPort?.disconnect();
+  selectionPort = port;
+  port.onMessage.addListener((msg: SelectionMessage) => {
+    if (selectionPort === port) setSelection(msg);
+  });
+  port.onDisconnect.addListener(() => {
+    void chrome.runtime.lastError;
+    if (selectionPort === port) {
+      selectionPort = null;
+      setSelection(null);
+    }
+  });
+});
+
+function stopSelectionWatch(): void {
+  // Disconnecting our own end does not fire our onDisconnect, so the reset is
+  // manual here.
+  selectionPort?.disconnect();
+  selectionPort = null;
+  watchedTabId = null;
+  setSelection(null);
+}
+
+function syncSelectionWatch(): void {
+  // Watch exactly while the cards are on screen, and only the tab they name.
+  const target =
+    !ctaEl.hidden && hasHostAccess && activeTabId !== null && isReadableUrl(activeTabUrl)
+      ? activeTabId
+      : null;
+  if (target === watchedTabId) return;
+  stopSelectionWatch();
+  watchedTabId = target;
+  if (target !== null) void armSelectionWatch(target);
+}
+
+async function armSelectionWatch(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content/selection-watch.js'],
+    });
+  } catch {
+    // Restricted page, or access revoked since we last looked. The card just
+    // stays dormant.
+  }
+}
+
+// -- Card actions -----------------------------------------------------------
+
+function sendRead(type: 'read-page' | 'read-selection'): void {
+  // Name the tab outright: this view knows its own window's active tab.
+  const tabId = activeTabId ?? undefined;
+  const msg: Message =
+    type === 'read-page'
+      ? { target: 'background', type: 'read-page', tabId }
+      : { target: 'background', type: 'read-selection', tabId };
+  void chrome.runtime.sendMessage(msg).catch(() => {});
+}
+
+async function requestHostAccess(): Promise<void> {
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
+  } catch {
+    // Firefox refuses the request from some contexts; point at the UI that
+    // always works instead of leaving a card that does nothing.
+    accessRefused = true;
+  }
+  if (granted) {
+    hasHostAccess = true;
+    accessRefused = false;
+  }
+  renderPageCard();
+  renderSelectionCard();
+  syncSelectionWatch();
+}
+
+pageCard.addEventListener('click', () => {
+  if (!hasHostAccess) {
+    void requestHostAccess();
+    return;
+  }
+  sendRead('read-page');
+});
+
+selectionCard.addEventListener('click', () => {
+  if (!hasHostAccess) {
+    void requestHostAccess();
+    return;
+  }
+  // Re-extracted from the page on arrival: the card shows a preview, never
+  // the payload.
+  sendRead('read-selection');
+});
+
+replayCard.addEventListener('click', () => {
+  if (chunkStrings.length === 0) return;
+  sendPlayerCmd({
+    type: 'speak',
+    text: chunkStrings.join('\n\n'),
+    title: titleEl.textContent || undefined,
+  });
+});
+
+async function initHostAccess(): Promise<void> {
+  try {
+    hasHostAccess = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+  } catch {
+    // No permissions API here; trust the manifest.
+    hasHostAccess = true;
+  }
+  renderPageCard();
+  renderSelectionCard();
+  syncSelectionWatch();
+}
+
 // -- Status -----------------------------------------------------------------
 
 function renderStatus(s: PlayerStatus): void {
@@ -259,13 +558,10 @@ function renderStatus(s: PlayerStatus): void {
     case 'paused':
       eyebrowEl.textContent = 'PAUSED';
       break;
+    // Not "nothing is being read" — something is on its way, so renderView
+    // shows neither transcript nor cards.
     case 'preparing':
       eyebrowEl.textContent = (s.detail ?? 'PREPARING…').toUpperCase();
-      if (lines.length === 0) {
-        // Not "nothing is being read" — something is on its way.
-        lyricsEl.hidden = true;
-        emptyEl.style.display = 'none';
-      }
       break;
     case 'loading-model':
       eyebrowEl.textContent = (s.detail ?? 'LOADING VOICE…').toUpperCase();
@@ -275,15 +571,12 @@ function renderStatus(s: PlayerStatus): void {
       target.fill(0);
       break;
     case 'idle':
-      eyebrowEl.textContent = lines.length > 0 ? 'FINISHED' : 'NOW READING';
+      eyebrowEl.textContent = lines.length > 0 ? 'FINISHED' : 'READY';
       target.fill(0);
-      if (lines.length > 0) {
-        for (const line of lines) line.className = 'line past';
-      } else {
-        showLyrics(false);
-      }
+      for (const line of lines) line.className = 'line past';
       break;
   }
+  renderView();
   // Last: the badge may need to override the eyebrow just set above.
   renderBadge();
 }
@@ -374,11 +667,15 @@ document.addEventListener('click', (e) => {
 
 void getSettings().then((s) => {
   selectedModel = s.selectedModel;
+  speed = s.speed;
   renderModelButton();
+  renderSelectionCard(); // the duration estimate depends on the speed
 });
 onSettingsChanged((s) => {
   selectedModel = s.selectedModel;
+  speed = s.speed;
   renderModelButton();
+  renderSelectionCard();
 });
 
 // -- Visualizer -------------------------------------------------------------
@@ -475,9 +772,11 @@ function draw(): void {
   requestAnimationFrame(draw);
 }
 
-showLyrics(false);
+renderView();
+renderSelectionCard();
 connectPort();
 sendPlayerCmd({ type: 'get-status' });
+void initHostAccess();
 void loadReadingTab();
 void initTabTracking();
 requestAnimationFrame(draw);

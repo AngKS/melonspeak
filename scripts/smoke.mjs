@@ -3,6 +3,7 @@
 // model and runs a real end-to-end synthesis check.
 import puppeteer from 'puppeteer-core';
 import { existsSync, mkdirSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
 import {
   MB,
@@ -186,6 +187,129 @@ if (closed.interactive) errors.push('header must not be clickable once the tab i
 if (closed.eyebrow !== 'STOPPED') errors.push(`eyebrow should read STOPPED, got ${closed.eyebrow}`);
 
 await swWorker.evaluate(() => chrome.storage.session.remove('readingTab'));
+
+// --- Call-to-action cards --------------------------------------------------
+// Served over http rather than data:/file: because <all_urls> is what grants
+// the panel its access, and neither of those schemes is covered by it.
+const FIXTURE_TITLE = 'Fixture article for MelonSpeak';
+const fixtureServer = createServer((_req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(
+    `<!doctype html><html><head><title>${FIXTURE_TITLE}</title></head><body>` +
+      `<p id="para">Every day afternoon I have at least one build running somewhere.</p>` +
+      `</body></html>`,
+  );
+});
+await new Promise((r) => fixtureServer.listen(0, '127.0.0.1', r));
+const fixtureUrl = `http://127.0.0.1:${fixtureServer.address().port}/`;
+
+// Reset the player state the badge checks above left behind.
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'idle', modelId: null },
+  }),
+);
+
+const fixture = await browser.newPage();
+pageErrors(fixture, 'fixture');
+await fixture.goto(fixtureUrl, { waitUntil: 'domcontentloaded' });
+// Highlight before the panel starts watching, so this also covers the
+// watcher reporting a selection that predates it.
+await fixture.evaluate(() => {
+  const range = document.createRange();
+  range.selectNodeContents(document.getElementById('para'));
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+});
+// The reading view tracks the active tab of its own window, so the fixture
+// has to actually be the front tab — the view keeps running in the background.
+await fixture.bringToFront();
+await new Promise((r) => setTimeout(r, 1200));
+
+const cards = await reader.evaluate(() => ({
+  ctaHidden: document.getElementById('cta').hidden,
+  full: document.getElementById('cta').classList.contains('full'),
+  pageSub: document.getElementById('cta-page-sub').textContent.trim(),
+  pageDisabled: document.getElementById('cta-page').disabled,
+  selectionDormant: document.getElementById('cta-selection').classList.contains('dormant'),
+  selectionDisabled: document.getElementById('cta-selection').disabled,
+  quote: document.getElementById('cta-selection-quote').textContent.trim(),
+  meta: document.getElementById('cta-selection-meta').textContent.trim(),
+  replayHidden: document.getElementById('cta-replay').hidden,
+}));
+console.log('cta cards with a highlight on the active tab:', cards);
+await reader.screenshot({ path: join(OUT, 'reader-cta.png') });
+
+if (cards.ctaHidden) errors.push('cards should be showing with nothing being read');
+if (!cards.full) errors.push('cards should be full-size with no transcript');
+if (cards.pageDisabled) errors.push('read-page card should be enabled on an http page');
+if (cards.pageSub !== FIXTURE_TITLE) {
+  errors.push(`read-page card should name the active tab, got "${cards.pageSub}"`);
+}
+if (cards.selectionDormant || cards.selectionDisabled) {
+  errors.push('highlight card should light up when the page has a selection');
+}
+if (!cards.quote.includes('Every day afternoon')) {
+  errors.push(`highlight card should quote the selection, got "${cards.quote}"`);
+}
+if (!/^11 words · /.test(cards.meta)) {
+  errors.push(`highlight card should count the selected words, got "${cards.meta}"`);
+}
+if (!cards.replayHidden) errors.push('replay card must not offer to repeat a read that never happened');
+
+// Clearing the highlight must put the card back to sleep.
+await fixture.evaluate(() => window.getSelection().removeAllRanges());
+await new Promise((r) => setTimeout(r, 800));
+const afterClear = await reader.evaluate(() => ({
+  dormant: document.getElementById('cta-selection').classList.contains('dormant'),
+  quoteHidden: document.getElementById('cta-selection-quote').hidden,
+}));
+console.log('highlight card after clearing the selection:', afterClear);
+if (!afterClear.dormant) errors.push('highlight card should go dormant when the selection clears');
+if (!afterClear.quoteHidden) errors.push('a cleared selection must not leave its quote on screen');
+
+// A finished read: transcript kept, cards tucked underneath, replay offered.
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'transcript',
+    chunks: ['First chunk.', 'Second chunk.'],
+    title: 'Test article',
+  }),
+);
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'idle', modelId: null },
+  }),
+);
+await new Promise((r) => setTimeout(r, 800));
+const finished = await reader.evaluate(() => ({
+  compact: document.getElementById('cta').classList.contains('compact'),
+  lyricsVisible: !document.getElementById('lyrics').hidden,
+  replayHidden: document.getElementById('cta-replay').hidden,
+  replaySub: document.getElementById('cta-replay-sub').textContent.trim(),
+  eyebrow: document.getElementById('eyebrow').textContent,
+}));
+console.log('cta cards after a finished read:', finished);
+await reader.screenshot({ path: join(OUT, 'reader-cta-finished.png') });
+if (!finished.compact) errors.push('cards should be compact under a finished transcript');
+if (!finished.lyricsVisible) errors.push('a finished read must keep its transcript on screen');
+if (finished.replayHidden) errors.push('replay card should be offered once a read has finished');
+// Not the title: the header already carries that, and so may the page card.
+if (finished.replaySub !== 'From the top · 2 lines') {
+  errors.push(`replay card should describe the transcript, got "${finished.replaySub}"`);
+}
+if (finished.eyebrow !== 'FINISHED') {
+  errors.push(`eyebrow should read FINISHED, got ${finished.eyebrow}`);
+}
+
+await fixture.close();
+fixtureServer.close();
 
 if (DO_DOWNLOAD) {
   console.log('\n--- e2e: downloading ${MODEL} and synthesizing ---');
