@@ -169,24 +169,243 @@ h1 {
   transform: none;
 }
 
-#empty {
-  flex: 1;
+/* -- Call-to-action cards -------------------------------------------------- */
+
+/* Two sizes of the same block: 'full' owns the panel when nothing has been
+   read, 'compact' tucks under the transcript a finished read left behind. */
+#cta {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   gap: 10px;
-  text-align: center;
-  color: rgba(255, 255, 255, 0.75);
-  font-size: clamp(16px, 4.4vw, 19px);
-  font-weight: 650;
-  min-height: 0;
+  min-width: 0;
 }
-#empty .hint {
-  font-size: 14px;
+#cta.full {
+  flex: 1;
+  justify-content: center;
+  min-height: 0;
+  /* Long tab titles and quotes make the cards taller than a short panel. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#cta.full::-webkit-scrollbar {
+  display: none;
+}
+#cta.compact {
+  flex-shrink: 0;
+  gap: 8px;
+  padding-top: 4px;
+}
+#cta-lead {
+  font-size: clamp(15px, 4vw, 17px);
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.72);
+  text-align: center;
+  margin-bottom: 2px;
+}
+#cta-foot {
+  font-size: 12px;
   font-weight: 450;
-  color: rgba(255, 255, 255, 0.45);
-  max-width: min(380px, 100%);
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.38);
+  text-align: center;
+  margin-top: 2px;
+}
+#cta-foot strong {
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.5);
+}
+/* The compact form is a follow-up to a transcript, not an introduction. */
+#cta.compact #cta-lead,
+#cta.compact #cta-foot {
+  display: none;
+}
+
+.cta-card {
+  display: flex;
+  /* Top-aligned: a wrapped title or a three-line quote would otherwise leave
+     the icon floating in the middle of the card, away from the label it
+     belongs to. */
+  align-items: flex-start;
+  gap: clamp(10px, 3vw, 14px);
+  width: 100%;
+  padding: clamp(11px, 2.2vh, 15px) clamp(12px, 3vw, 15px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    transform 0.12s;
+}
+#cta.compact .cta-card {
+  padding: 10px 12px;
+  border-radius: 13px;
+}
+.cta-card:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.cta-card:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.cta-card:focus-visible {
+  outline: 2px solid rgba(224, 74, 92, 0.7);
+  outline-offset: 2px;
+}
+.cta-icon {
+  flex-shrink: 0;
+  font-size: clamp(17px, 4.6vw, 20px);
+  /* Sits on the title's first line rather than the card's centre. */
+  line-height: 1.25;
+}
+.cta-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cta-title {
+  font-size: clamp(14px, 3.8vw, 15.5px);
+  font-weight: 680;
+  line-height: 1.3;
+}
+.cta-sub,
+.cta-quote,
+.cta-meta {
+  font-size: 12.5px;
+  font-weight: 450;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.5);
+  overflow-wrap: anywhere;
+}
+/* One line for a tab title, three for a quote — both clamped so a card can
+   never push the model picker off a short panel. */
+.cta-sub {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.cta-quote {
+  margin-top: 4px;
+  padding-left: 9px;
+  border-left: 2px solid rgba(127, 215, 154, 0.45);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12.5px;
+  font-style: italic;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+#cta.compact .cta-quote {
+  -webkit-line-clamp: 2;
+}
+.cta-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(127, 215, 154, 0.85);
+}
+.cta-chev {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 19px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+/* Read this page: the primary action, in the watermelon red.
+   Every rule below excludes .needs-access explicitly — an id selector would
+   otherwise outrank the amber treatment and paint a card that cannot act. */
+#cta-page:not(:disabled):not(.needs-access) {
+  border-color: rgba(224, 74, 92, 0.42);
+  background: rgba(224, 74, 92, 0.14);
+}
+#cta-page:not(:disabled):not(.needs-access):hover {
+  background: rgba(224, 74, 92, 0.22);
+}
+/* Once a read has finished, playing it again is the likelier intent, so the
+   replay card takes the red and the page card steps back to neutral. */
+#cta.compact #cta-replay {
+  border-color: rgba(224, 74, 92, 0.42);
+  background: rgba(224, 74, 92, 0.14);
+}
+#cta.compact #cta-replay:hover {
+  background: rgba(224, 74, 92, 0.22);
+}
+#cta.compact #cta-page:not(:disabled):not(.needs-access) {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+#cta.compact #cta-page:not(:disabled):not(.needs-access):hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+#cta-replay .cta-icon {
+  font-size: clamp(15px, 4vw, 17px);
+  color: rgba(255, 154, 164, 0.95);
+}
+
+/* Nothing highlighted yet: present, explained, and plainly not ready. */
+.cta-card.dormant {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.17);
+  background: none;
+  cursor: default;
+}
+.cta-card.dormant .cta-title {
+  color: rgba(255, 255, 255, 0.55);
+}
+.cta-card.dormant .cta-icon {
+  opacity: 0.5;
+}
+.cta-card.dormant .cta-chev {
+  visibility: hidden;
+}
+
+/* Text is waiting: solid, green, and briefly lit on arrival. */
+#cta-selection:not(.dormant):not(.needs-access) {
+  border-color: rgba(127, 215, 154, 0.5);
+  background: rgba(42, 140, 74, 0.16);
+  animation: cta-wake 0.6s ease-out;
+}
+#cta-selection:not(.dormant):not(.needs-access):hover {
+  background: rgba(42, 140, 74, 0.26);
+}
+@keyframes cta-wake {
+  0% {
+    box-shadow: 0 0 0 0 rgba(127, 215, 154, 0);
+  }
+  35% {
+    box-shadow: 0 0 0 4px rgba(127, 215, 154, 0.28);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(127, 215, 154, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #cta-selection:not(.dormant):not(.needs-access) {
+    animation: none;
+  }
+  .cta-card:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* Firefox grants host permissions on request, not at install. Until then the
+   cards can neither read the page nor see a highlight. */
+.cta-card.needs-access {
+  border-style: dashed;
+  border-color: rgba(255, 200, 120, 0.4);
+  background: rgba(255, 190, 100, 0.08);
+}
+.cta-card.needs-access .cta-sub {
+  color: rgba(255, 205, 140, 0.75);
 }
 
 #bottom {
