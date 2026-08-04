@@ -17,12 +17,15 @@ export function wasmThreads(accel: boolean): number {
 
 /** True when a WebGPU adapter is actually obtainable (navigator.gpu existing
  *  is not enough — extension contexts can expose it and still return no
- *  adapter). Never throws. */
-export async function webgpuAvailable(): Promise<boolean> {
+ *  adapter). Never throws, and never hangs: requestAdapter() has been seen
+ *  stalling instead of rejecting in bad driver states (e.g. after Chrome's
+ *  GPU-process crash-loop lockout), so it races a timeout. */
+export async function webgpuAvailable(timeoutMs = 3000): Promise<boolean> {
   try {
     const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown | null> } }).gpu;
     if (!gpu) return false;
-    return (await gpu.requestAdapter()) !== null;
+    const timeout = new Promise<null>((r) => setTimeout(() => r(null), timeoutMs));
+    return (await Promise.race([gpu.requestAdapter(), timeout])) !== null;
   } catch {
     return false;
   }

@@ -102,10 +102,57 @@ mean "model card" to both the download flow and the smoke harness.
   replays the sample, and requires a "(N threads)"/"(GPU)" load marker —
   failing if acceleration was requested but the engine silently stayed on
   the plain path. Restores the toggle afterwards.
-- Piper run: `… (4 threads)`, synthesis + playback verified end to end.
+- Verified per engine: Piper `… (4 threads)`, Kokoro `… (4 threads)`
+  (transformers.js thread path), Supertonic `… (GPU)` — each synthesized and
+  played to completion with the toggle on.
 - The standard suites (unit, Chrome smoke, e2e download/remove, Firefox
   smoke, verify-read) all run with the manifest keys present, guarding the
   no-toggle regression surface.
+
+## Research findings (web sweep, 2026-08-05)
+
+Two research passes (WASM threads in MV3; WebGPU in extension contexts)
+confirmed the design and added hardening. Key facts with sources:
+
+- **COEP/COOP manifest keys** (Chrome 93+) apply extension-origin-wide — every
+  `chrome-extension://` response carries the headers, which is what lets the
+  dedicated worker (and ort's pthread workers) satisfy the COEP worker-script
+  rule with zero per-file work. Known limits: isolation is not fully
+  implemented for service/shared workers (we don't run inference there), and
+  SharedArrayBuffer can't cross `runtime.sendMessage` (structured clone) —
+  ort's internal pool never needs to. [Chrome manifest COEP docs;
+  chromium-extensions threads]
+- **ort ≥1.17 falls back to 1 thread silently** (console warning, added via
+  microsoft/onnxruntime#19148) when isolation is missing — requesting threads
+  is safe everywhere. **`env.wasm.proxy` must stay off**: the proxy worker is
+  blob-URL-based and MV3 forbids blob workers (onnxruntime#14445); pthreads
+  are module workers from `import.meta.url` and are fine. Never let a bundler
+  rewrite the self-hosted `.mjs` (emscripten#22521).
+- **Firefox**: bugzilla 1673477 (extension-page isolation) is open after 5+
+  years, blocked on running every extension in its own process (1827085).
+  The manifest keys are silently ignored. Single-thread is mandatory there,
+  not just default — hence gating on `crossOriginIsolated`, never UA checks.
+- **Kokoro WebGPU is correctly excluded**: kokoro.js README recommends fp32
+  on webgpu — `model.onnx` is a *separate 326 MB file* from the installed
+  92 MB q8; fp16/quantized dtypes produce broken audio on the WebGPU backend,
+  and garbled output is also reported per-driver (AMD iGPUs, Android) even at
+  fp32 (hexgrad/kokoro#98, #193). Not beta material, revisit upstream later.
+- **piper-tts-web is hardcoded to WASM** (`inference.ts` passes no
+  `executionProviders`); WebGPU there means forking session creation.
+- **Supertonic's own web demo** ships the same fallback shape as ours:
+  try webgpu, catch, recreate the session on wasm — EP lists alone don't
+  give whole-session fallback, and unsupported ops fall back per-op to CPU
+  with copy overhead (profile before assuming full-GPU).
+- **Speedup expectations**: threads ≈1.5–2× for TTS (real Firefox-vs-Chromium
+  extension TTS report), up to ~3.4× in ort's official small-CNN benchmark;
+  Kokoro WebGPU reports range 2–10× but hardware-dependent. Threads can be a
+  wash for very small per-call workloads — hence the beta framing.
+- **Hardening adopted from the research**: `requestAdapter()` can hang (not
+  reject) in GPU-crash-loop states → `webgpuAvailable()` races a 3 s timeout;
+  a lost WebGPU device poisons its sessions permanently with `device.lost`
+  as the only signal → the player now disposes the engine whenever a read
+  aborts on synthesis failure, so the next attempt rebuilds fresh and
+  re-runs feature detection.
 
 ## Rejected / future
 

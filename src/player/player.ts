@@ -401,6 +401,13 @@ async function speak(
     if (session !== my) return;
     if (pendingSeek !== null) continue;
     if (synthError) {
+      // An engine that failed three chunks in a row is not to be trusted for
+      // the next read either — a lost WebGPU device (driver reset, VRAM
+      // reclaim) poisons its sessions permanently, and a crashed WASM heap
+      // is no better. Rebuild from scratch on the next attempt; a fresh
+      // build re-runs feature detection and lands on a working backend.
+      abandonEngineLoad();
+      disposeEngine();
       errorStatus(`Speech synthesis failed: ${synthError}`, modelId);
       return;
     }
