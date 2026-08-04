@@ -2,6 +2,8 @@
 // (auto-scrolling, current line highlighted, neighbors faded/blurred).
 import { VIZ_PORT } from '../lib/messages';
 import type { Message, ModelId, PlayerCommand, PlayerStatus, VizMessage } from '../lib/messages';
+import type { ReadingTabState } from '../lib/reading-tab';
+import { READING_TAB_KEY, computeBadge } from '../lib/reading-tab';
 import { getSettings, mutateSettings, onSettingsChanged } from '../lib/settings';
 import { MODELS, MODEL_IDS } from '../engines/registry';
 
@@ -10,6 +12,8 @@ const emptyEl = document.getElementById('empty') as HTMLElement;
 const transportEl = document.getElementById('transport') as HTMLElement;
 const titleEl = document.getElementById('title') as HTMLElement;
 const eyebrowEl = document.getElementById('eyebrow') as HTMLElement;
+const headEl = document.getElementById('head') as HTMLElement;
+const badgeEl = document.getElementById('bg-badge') as HTMLElement;
 const canvas = document.getElementById('viz') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 
@@ -21,6 +25,14 @@ let userScrollUntil = 0;
 let transcriptKey = '';
 let lastStatus: PlayerStatus | null = null;
 
+/** Tab being read; owned by the background, mirrored here for the badge. */
+let readingTabId: number | null = null;
+/** Active tab of *this* view's window. Null in a context without one. */
+let activeTabId: number | null = null;
+let myWindowId: number | null = null;
+/** Set when the background ended the read because the tab closed. */
+let stopReason: 'tab-closed' | null = null;
+
 function sendPlayerCmd(cmd: PlayerCommand): void {
   void chrome.runtime
     .sendMessage({ target: 'background', type: 'player-cmd', cmd } satisfies Message)
@@ -30,9 +42,124 @@ document.getElementById('pause')!.addEventListener('click', () => sendPlayerCmd(
 document.getElementById('resume')!.addEventListener('click', () => sendPlayerCmd({ type: 'resume' }));
 document.getElementById('stop')!.addEventListener('click', () => sendPlayerCmd({ type: 'stop' }));
 
+// -- Reading tab: backgrounded badge + click-to-return -----------------------
+// Display only. Stopping the read when that tab closes is the background's
+// job, so it still happens with the sidebar shut.
+
+function renderBadge(): void {
+  const state = computeBadge({
+    readingTabId,
+    activeTabId,
+    playerState: lastStatus?.state ?? 'idle',
+    stopReason,
+  });
+  badgeEl.hidden = state === 'none';
+  if (state === 'background') {
+    badgeEl.textContent = '⤴ BACKGROUND';
+    badgeEl.className = 'badge backgrounded';
+  } else if (state === 'stopped-tab-closed') {
+    badgeEl.textContent = '⊘ PAGE CLOSED';
+    badgeEl.className = 'badge closed';
+    // Overrides the 'FINISHED' renderStatus leaves on an idle player — the
+    // read didn't finish, the page went away.
+    eyebrowEl.textContent = 'STOPPED';
+  }
+  // Button semantics come and go with the state, so the header never sits in
+  // the tab order advertising an action it won't perform.
+  const clickable = state === 'background';
+  headEl.classList.toggle('clickable', clickable);
+  if (clickable) {
+    headEl.setAttribute('role', 'button');
+    headEl.setAttribute('tabindex', '0');
+    headEl.setAttribute('aria-label', 'Return to the page being read');
+  } else {
+    headEl.removeAttribute('role');
+    headEl.removeAttribute('tabindex');
+    headEl.removeAttribute('aria-label');
+  }
+}
+
+async function returnToReadingTab(): Promise<void> {
+  if (readingTabId === null || !headEl.classList.contains('clickable')) return;
+  try {
+    await chrome.tabs.update(readingTabId, { active: true });
+    // The tab may have been dragged into another window since the read began.
+    const tab = await chrome.tabs.get(readingTabId);
+    if (tab.windowId !== myWindowId) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch {
+    // Tab vanished between render and click; the background will correct us.
+  }
+}
+
+headEl.addEventListener('click', () => void returnToReadingTab());
+headEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault();
+  void returnToReadingTab();
+});
+
+chrome.tabs.onActivated.addListener((info) => {
+  if (myWindowId !== null && info.windowId !== myWindowId) return;
+  activeTabId = info.tabId;
+  renderBadge();
+});
+
+function applyReadingTab(state: ReadingTabState | undefined): void {
+  readingTabId = state?.tabId ?? null;
+  // Set before the player's empty-transcript broadcast can land — that
+  // ordering is what lets setTranscript() know to keep the lyrics.
+  stopReason = state?.reason === 'tab-closed' ? 'tab-closed' : null;
+  lyricsEl.classList.toggle('stopped', stopReason === 'tab-closed');
+  renderBadge();
+}
+
+// storage.session is the source of truth, so a sidebar opened mid-read gets
+// the current value and every later change without depending on the
+// background worker being alive to tell it.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'session' || !changes[READING_TAB_KEY]) return;
+  applyReadingTab(changes[READING_TAB_KEY].newValue as ReadingTabState | undefined);
+});
+
+async function loadReadingTab(): Promise<void> {
+  try {
+    const stored = await chrome.storage.session.get(READING_TAB_KEY);
+    applyReadingTab(stored[READING_TAB_KEY] as ReadingTabState | undefined);
+  } catch {
+    // No session storage; the badge stays hidden.
+  }
+}
+
+async function initTabTracking(): Promise<void> {
+  try {
+    const win = await chrome.windows.getCurrent();
+    myWindowId = win.id ?? null;
+    const [tab] = await chrome.tabs.query(
+      myWindowId !== null
+        ? { active: true, windowId: myWindowId }
+        : { active: true, currentWindow: true },
+    );
+    activeTabId = tab?.id ?? null;
+  } catch {
+    // No window context; the badge stays hidden rather than guessing.
+  }
+  renderBadge();
+}
+
 // -- Transcript / lyrics ----------------------------------------------------
 
 function setTranscript(chunks: string[] | null, title?: string): void {
+  // stopAll() broadcasts an empty transcript. After a tab-close stop we keep
+  // the lyrics on screen, dimmed, so "STOPPED / ⊘ PAGE CLOSED" has something
+  // to explain instead of an empty panel.
+  if (stopReason === 'tab-closed' && (!chunks || chunks.length === 0)) return;
+  // A real transcript means a new read has begun; the stopped state is over.
+  if (chunks && chunks.length > 0 && stopReason !== null) {
+    stopReason = null;
+    lyricsEl.classList.remove('stopped');
+  }
   // Status and transcript arrive on separate channels; don't rebuild (and
   // lose the active-line highlight) for a transcript we already show.
   const key = chunks
@@ -157,6 +284,8 @@ function renderStatus(s: PlayerStatus): void {
       }
       break;
   }
+  // Last: the badge may need to override the eyebrow just set above.
+  renderBadge();
 }
 
 chrome.runtime.onMessage.addListener((msg: Message) => {
@@ -349,4 +478,6 @@ function draw(): void {
 showLyrics(false);
 connectPort();
 sendPlayerCmd({ type: 'get-status' });
+void loadReadingTab();
+void initTabTracking();
 requestAnimationFrame(draw);

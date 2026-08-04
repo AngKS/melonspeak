@@ -8,10 +8,16 @@
   </head>
   <body>
     <main>
-      <header>
+      <!-- reader.ts adds role=button/tabindex only while the tab being read is
+           backgrounded — a real <button> can't be used here because the header
+           wraps an <h1>. Enter/Space are handled there too. -->
+      <header id="head">
         <img src="../icons/icon48.png" alt="" width="34" height="34" />
         <div class="head-text">
-          <p id="eyebrow">NOW READING</p>
+          <p id="eyebrow-row">
+            <span id="eyebrow">NOW READING</span>
+            <span id="bg-badge" hidden></span>
+          </p>
           <h1 id="title">MelonSpeak</h1>
         </div>
       </header>

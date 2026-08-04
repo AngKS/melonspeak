@@ -59,6 +59,8 @@ export type Message =
       type: 'installed-state';
       installed: Partial<Record<ModelId, boolean>>;
     }
+  /** Onboarding's sample belongs to no tab; it must drop a stale one. */
+  | { target: 'background'; type: 'clear-reading-tab' }
   | { target: 'ui'; type: 'status'; status: PlayerStatus }
   | { target: 'ui'; type: 'download-progress'; progress: DownloadProgress }
   | { target: 'ui'; type: 'transcript'; chunks: string[]; title?: string }

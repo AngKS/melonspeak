@@ -117,7 +117,75 @@ const setupVisible = await popup.$eval('#setup', (el) => !el.hidden);
 console.log('popup shows setup prompt (no models yet):', setupVisible);
 if (!setupVisible && FRESH) errors.push('popup should show setup prompt on a fresh profile');
 
-await openPage('reader/reader.html', 'reader');
+const reader = await openPage('reader/reader.html', 'reader');
+// With nothing being read the badge machinery must be completely inert, and
+// the header must not advertise a click target it won't honour.
+const badgeIdle = await reader.evaluate(() => ({
+  hidden: document.getElementById('bg-badge').hidden,
+  interactive: document.getElementById('head').hasAttribute('role'),
+}));
+console.log('reader badge idle state:', badgeIdle);
+if (!badgeIdle.hidden) errors.push('badge should be hidden with nothing being read');
+if (badgeIdle.interactive) errors.push('header should not be interactive with no reading tab');
+
+// storage.session is the reading view's source of truth, so it must be
+// readable straight from an extension page with no background round-trip.
+const sessionReadable = await reader.evaluate(async () => {
+  try {
+    const v = await chrome.storage.session.get('readingTab');
+    return v.readingTab === undefined ? 'empty' : `set:${JSON.stringify(v.readingTab)}`;
+  } catch (err) {
+    return `error:${String(err)}`;
+  }
+});
+console.log('reader reads storage.session directly:', sessionReadable);
+if (sessionReadable !== 'empty') {
+  errors.push(`expected no reading tab on a fresh profile, got ${sessionReadable}`);
+}
+
+// Drive the badge end to end through its real channels: storage.session for
+// the tab being read, a status broadcast for playback state.
+const swWorker = await (
+  await browser.waitForTarget(
+    (t) => t.type() === 'service_worker' && t.url().includes('background.js'),
+    { timeout: 5000 },
+  )
+).worker();
+const readBadge = () =>
+  reader.evaluate(() => ({
+    hidden: document.getElementById('bg-badge').hidden,
+    text: document.getElementById('bg-badge').textContent,
+    eyebrow: document.getElementById('eyebrow').textContent,
+    interactive: document.getElementById('head').hasAttribute('role'),
+  }));
+
+// Another tab is being read and the player is speaking → badge + click target.
+await swWorker.evaluate(() => chrome.storage.session.set({ readingTab: { tabId: 999999 } }));
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'speaking', modelId: null },
+  }),
+);
+await new Promise((r) => setTimeout(r, 600));
+const backgrounded = await readBadge();
+console.log('badge while backgrounded:', backgrounded);
+if (backgrounded.hidden) errors.push('badge should show while another tab is being read');
+if (!backgrounded.interactive) errors.push('header should be clickable while backgrounded');
+
+// That tab closes → explained stop, no longer a click target.
+await swWorker.evaluate(() =>
+  chrome.storage.session.set({ readingTab: { tabId: null, reason: 'tab-closed' } }),
+);
+await new Promise((r) => setTimeout(r, 600));
+const closed = await readBadge();
+console.log('badge after tab close:', closed);
+if (closed.hidden) errors.push('badge should explain a tab-close stop');
+if (closed.interactive) errors.push('header must not be clickable once the tab is gone');
+if (closed.eyebrow !== 'STOPPED') errors.push(`eyebrow should read STOPPED, got ${closed.eyebrow}`);
+
+await swWorker.evaluate(() => chrome.storage.session.remove('readingTab'));
 
 if (DO_DOWNLOAD) {
   console.log('\n--- e2e: downloading ${MODEL} and synthesizing ---');

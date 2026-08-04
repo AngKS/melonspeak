@@ -10,7 +10,11 @@ ever leaves your computer.
 - **Read page** — extracts the readable article (Mozilla Readability) and speaks it.
 - **Read highlighted text** — or right-click a selection → **Speak content**.
 - **Now Reading view** — Apple Music-style auto-scrolling lyrics with a live
-  audio visualizer.
+  audio visualizer; click any line to jump there. Opens automatically in the
+  sidebar when a read starts (side panel on Chrome, `sidebar_action` on
+  Firefox), and badges itself **⤴ BACKGROUND** when you switch away from the
+  page being read — click the header to go back. Closing that tab stops the
+  read and says so.
 - **Switch models/voices** — pick between local TTS models at any time:
 
 | Model | Real name | Download | Notes |

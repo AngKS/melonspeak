@@ -3,6 +3,8 @@
 import type { ExtractResult } from './content/extract';
 import type { Message, ModelId, PlayerCommand, PlayerStatus } from './lib/messages';
 import { broadcast } from './lib/messages';
+import type { ReadingTabState } from './lib/reading-tab';
+import { READING_TAB_KEY } from './lib/reading-tab';
 import { getSettings, mutateSettings } from './lib/settings';
 import { openSidebar } from './lib/sidebar';
 
@@ -35,13 +37,29 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 // chrome.storage.session (not a background variable) because Chrome can
 // evict the MV3 service worker mid-read and this listener must still
 // recognise the tab afterwards.
-const READING_TAB_KEY = 'readingTab';
+/** Written only here; the reading view observes storage.session.onChanged
+ *  rather than a broadcast. Broadcasting from this worker is unreliable for
+ *  state the view must not miss: an MV3 worker can be torn down the moment a
+ *  listener returns, dropping any send queued after an await. Storage has no
+ *  such lifetime coupling. */
+async function setReadingTab(tabId: number | null, reason?: 'tab-closed'): Promise<void> {
+  const state: ReadingTabState = reason ? { tabId, reason } : { tabId };
+  try {
+    await chrome.storage.session.set({ [READING_TAB_KEY]: state });
+  } catch {
+    // No session storage: the badge simply never appears.
+  }
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  void chrome.storage.session.get(READING_TAB_KEY).then((stored) => {
-    if (stored[READING_TAB_KEY] !== tabId) return;
-    void chrome.storage.session.remove(READING_TAB_KEY);
-    void deliverToPlayer({ type: 'stop' });
+  void chrome.storage.session.get(READING_TAB_KEY).then(async (stored) => {
+    const state = stored[READING_TAB_KEY] as ReadingTabState | undefined;
+    if (state?.tabId !== tabId) return;
+    // Record the reason BEFORE stopping: stopAll() broadcasts an empty
+    // transcript, and the reading view must already know why or it wipes the
+    // lyrics with nothing left to explain the silence.
+    await setReadingTab(null, 'tab-closed');
+    await deliverToPlayer({ type: 'stop' });
   });
 });
 
@@ -92,11 +110,15 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
   }
   if (msg.target !== 'background') return;
   if (msg.type === 'player-cmd') {
+    // A user-initiated stop ends the association with the tab being read.
+    if (msg.cmd.type === 'stop') void setReadingTab(null);
     void deliverToPlayer(msg.cmd);
   } else if (msg.type === 'read-page' || msg.type === 'read-selection') {
     void readActiveTab(msg.type === 'read-page' ? 'page' : 'selection');
   } else if (msg.type === 'installed-state') {
     void reconcileInstalled(msg.installed);
+  } else if (msg.type === 'clear-reading-tab') {
+    void setReadingTab(null);
   }
 });
 
@@ -159,7 +181,9 @@ async function readTab(tabId: number, mode: 'page' | 'selection', fallbackText?:
     text = text.slice(0, MAX_CHARS);
     title += ' (first part)';
   }
-  await chrome.storage.session.set({ [READING_TAB_KEY]: tabId });
+  // Only a successful extraction claims the tab: a failed read leaves an
+  // already-playing read's badge alone.
+  await setReadingTab(tabId);
   await deliverToPlayer({ type: 'speak', text, title });
 }
 
