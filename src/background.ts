@@ -95,8 +95,24 @@ chrome.runtime.onMessage.addListener((msg: Message) => {
     void deliverToPlayer(msg.cmd);
   } else if (msg.type === 'read-page' || msg.type === 'read-selection') {
     void readActiveTab(msg.type === 'read-page' ? 'page' : 'selection');
+  } else if (msg.type === 'installed-state') {
+    void reconcileInstalled(msg.installed);
   }
 });
+
+/** Settings only *record* what was downloaded; UI pages can see the files
+ *  themselves and report the truth here, since this is the only writer. */
+async function reconcileInstalled(installed: Partial<Record<ModelId, boolean>>): Promise<void> {
+  await mutateSettings((s) => {
+    const downloaded = { ...s.downloaded, ...installed };
+    const remaining = (Object.keys(downloaded) as ModelId[]).filter((m) => downloaded[m]);
+    const keepSelected = s.selectedModel !== null && downloaded[s.selectedModel];
+    return {
+      downloaded,
+      selectedModel: keepSelected ? s.selectedModel : (remaining[0] ?? null),
+    };
+  });
+}
 
 async function readActiveTab(mode: 'page' | 'selection'): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });

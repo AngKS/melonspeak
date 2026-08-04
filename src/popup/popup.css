@@ -22,6 +22,11 @@
   box-sizing: border-box;
   margin: 0;
 }
+/* `hidden` is only a user-agent rule; author `display:` rules (e.g. .row on
+   #voice-row) outrank it and would show elements the script hid. */
+[hidden] {
+  display: none !important;
+}
 body {
   width: 300px;
   padding: 12px;

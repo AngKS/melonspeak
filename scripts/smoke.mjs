@@ -4,6 +4,14 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import {
+  MB,
+  cardState,
+  clickRemove,
+  inspectStorage,
+  isStored,
+  storageProblems,
+} from './storage-probe.mjs';
 
 const CHROME = process.env.CHROME_BIN ?? '.chrome-for-testing/chrome/mac_arm-151.0.7922.71/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 const EXT = resolve('dist/chrome');
@@ -55,8 +63,54 @@ const onboarding = await openPage('onboarding/onboarding.html', 'onboarding');
 const cardCount = await onboarding.$$eval('.card', (els) => els.length);
 console.log('onboarding cards:', cardCount);
 if (cardCount !== 3) errors.push(`expected 3 model cards, got ${cardCount}`);
+
+if (FRESH) {
+  // Nothing is downloaded yet, so no card may show the installed badge —
+  // checked on computed style, since an author `display:` can override
+  // the `hidden` attribute and that is exactly how this once regressed.
+  for (let i = 0; i < cardCount; i++) {
+    const state = await cardState(onboarding, i);
+    if (state.installedVisible) errors.push(`card ${i} shows "Installed" on a fresh profile`);
+    if (state.progressVisible) errors.push(`card ${i} shows a progress bar before downloading`);
+  }
+}
 const sizesShown = await onboarding.$$eval('.real', (els) => els.map((e) => e.textContent.trim()));
 console.log('model lines:', sizesShown);
+
+if (FRESH) {
+  // A leftover settings flag (cache evicted, site data cleared, download that
+  // never finished writing) must not resurrect the badge — the page checks the
+  // files and corrects the record.
+  await onboarding.evaluate(async () => {
+    await chrome.storage.local.set({
+      settings: {
+        downloaded: { kokoro: true, piper: true },
+        selectedModel: 'kokoro',
+        voices: {},
+        speed: 1,
+        onboarded: true,
+      },
+    });
+  });
+  await onboarding.reload({ waitUntil: 'domcontentloaded' });
+  await new Promise((r) => setTimeout(r, 1200));
+  for (let i = 0; i < cardCount; i++) {
+    if ((await cardState(onboarding, i)).installedVisible) {
+      errors.push(`card ${i} shows "Installed" for a model whose files are gone`);
+    }
+  }
+  const reconciled = await onboarding.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get('settings');
+    return settings;
+  });
+  console.log('settings after reconciling a stale flag:', JSON.stringify(reconciled));
+  if (Object.values(reconciled?.downloaded ?? {}).some(Boolean)) {
+    errors.push('stale downloaded flags were not cleared');
+  }
+  if (reconciled?.selectedModel !== null) {
+    errors.push(`selectedModel should be null, got ${reconciled?.selectedModel}`);
+  }
+}
 
 const popup = await openPage('popup/popup.html', 'popup');
 const setupVisible = await popup.$eval('#setup', (el) => !el.hidden);
@@ -85,20 +139,12 @@ if (DO_DOWNLOAD) {
   }, MODEL_INDEX);
   const t0 = Date.now();
   for (;;) {
-    const state = await onboarding.evaluate((idx) => {
-      const cards = [...document.querySelectorAll('.card')];
-      const c = cards[idx];
-      return {
-        installed: !c.querySelector('.installed').hidden,
-        error: c.querySelector('.dl-error').hidden ? null : c.querySelector('.dl-error').textContent,
-        pct: c.querySelector('.pct')?.textContent,
-      };
-    }, MODEL_INDEX);
+    const state = await cardState(onboarding, MODEL_INDEX);
     if (state.error) {
       errors.push(`${MODEL} download failed: ${state.error}`);
       break;
     }
-    if (state.installed) {
+    if (state.installedVisible) {
       console.log(`${MODEL} downloaded+installed in ${Math.round((Date.now() - t0) / 1000)}s`);
       break;
     }
@@ -109,6 +155,12 @@ if (DO_DOWNLOAD) {
     await new Promise((r) => setTimeout(r, 2000));
   }
   await onboarding.screenshot({ path: join(OUT, 'onboarding-downloaded.png') });
+
+  // "Installed" must mean the bytes are on disk, not that a flag was set.
+  const stored = await inspectStorage(onboarding);
+  const problems = storageProblems(MODEL, stored);
+  console.log(`stored ${MB(stored.usage)}:`, problems.length ? problems : 'all files present');
+  for (const p of problems) errors.push(`${MODEL} claims installed but ${p}`);
 
   if (!errors.some((e) => e.startsWith(MODEL))) {
     // Play the sample and watch for speaking → idle.
@@ -134,6 +186,28 @@ if (DO_DOWNLOAD) {
     if (lastErr) errors.push(`player error during sample: ${lastErr}`);
     else if (!sawSpeaking) errors.push('sample never reached speaking state');
   }
+
+  // --- uninstall ----------------------------------------------------------
+  console.log(`\n--- e2e: removing ${MODEL} ---`);
+  await clickRemove(onboarding, MODEL_INDEX);
+  const tRemove = Date.now();
+  let removedState = await cardState(onboarding, MODEL_INDEX);
+  while (removedState.installedVisible && Date.now() - tRemove < 60_000) {
+    await new Promise((r) => setTimeout(r, 500));
+    removedState = await cardState(onboarding, MODEL_INDEX);
+  }
+  if (removedState.installedVisible) {
+    errors.push(`${MODEL} still shows as installed after Remove (${removedState.error ?? ''})`);
+  }
+  const afterRemove = await inspectStorage(onboarding);
+  console.log(`after remove: ${MB(afterRemove.usage)} left on disk`);
+  if (isStored(MODEL, afterRemove)) errors.push(`${MODEL} files survived Remove`);
+  await onboarding.screenshot({ path: join(OUT, 'onboarding-removed.png') });
+
+  const popupAfter = await openPage('popup/popup.html', 'popup-after-remove');
+  const backToSetup = await popupAfter.$eval('#setup', (el) => !el.hidden);
+  console.log('popup returns to setup prompt after removing the last model:', backToSetup);
+  if (!backToSetup) errors.push('popup still offers a model after the last one was removed');
 }
 
 await browser.close();

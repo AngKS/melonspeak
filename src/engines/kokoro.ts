@@ -5,22 +5,11 @@ import { KokoroTTS } from 'kokoro-js';
 import { env } from '@huggingface/transformers';
 import { extUrl } from '../lib/ext-url';
 import { installHfFetchCache } from '../lib/hf-cache';
+import { KOKORO_HF_MODEL, KOKORO_VOICE_IDS, kokoroVoiceUrl } from './model-storage';
 import type { ProgressFn, TTSEngine } from './types';
 
-const HF_MODEL = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+const HF_MODEL = KOKORO_HF_MODEL;
 const DTYPE = 'q8';
-/** Voices offered in the UI; prefetched at download time for offline use. */
-export const VOICE_IDS = [
-  'af_heart',
-  'af_bella',
-  'af_nicole',
-  'am_michael',
-  'am_fenrir',
-  'am_puck',
-  'bf_emma',
-  'bm_george',
-  'bm_fable',
-] as const;
 
 function configureTransformers(): void {
   installHfFetchCache();
@@ -88,32 +77,10 @@ export async function download(onProgress: ProgressFn): Promise<void> {
     }
   });
   // Prefetch voice embeddings through the HF fetch cache so voice switching
-  // works offline forever after.
-  for (const voice of VOICE_IDS) {
-    await fetch(`https://huggingface.co/${HF_MODEL}/resolve/main/voices/${voice}.bin`);
+  // works offline forever after. installHfFetchCache() awaits each cache write,
+  // so every voice is on disk by the time this returns.
+  for (const voice of KOKORO_VOICE_IDS) {
+    await fetch(kokoroVoiceUrl(voice));
   }
   report();
-}
-
-const MODEL_URL_PREFIX = `https://huggingface.co/${HF_MODEL}/resolve/main/`;
-
-export async function isDownloaded(): Promise<boolean> {
-  try {
-    const cache = await caches.open('transformers-cache');
-    const keys = await cache.keys();
-    return keys.some((req) => req.url.includes(HF_MODEL) && req.url.endsWith('.onnx'));
-  } catch {
-    return false;
-  }
-}
-
-export async function remove(): Promise<void> {
-  for (const name of ['transformers-cache', 'melonspeak-models']) {
-    const cache = await caches.open(name);
-    for (const req of await cache.keys()) {
-      if (req.url.startsWith(MODEL_URL_PREFIX) || req.url.includes(HF_MODEL)) {
-        await cache.delete(req);
-      }
-    }
-  }
 }

@@ -7,26 +7,14 @@
 // one bundled copy of the (jsep) WASM runtime under wasm/ort/.
 import * as ort from 'onnxruntime-web';
 import { extUrl } from '../lib/ext-url';
-import { allCached, cachedBuffer, fetchToCache, removeCached } from './downloader';
-import type { RemoteFile } from './downloader';
+import { cachedBuffer, fetchToCache } from './downloader';
+import {
+  SUPERTONIC_BASE as BASE,
+  SUPERTONIC_FILES,
+  SUPERTONIC_ONNX as ONNX_MODELS,
+} from './model-storage';
 import { preprocessText, textToIds } from './supertonic-text';
 import type { ProgressFn, SynthesisResult, TTSEngine } from './types';
-
-const BASE = 'https://huggingface.co/Supertone/supertonic/resolve/main/';
-
-const ONNX_MODELS: RemoteFile[] = [
-  { url: `${BASE}onnx/duration_predictor.onnx`, bytes: 1_500_789 },
-  { url: `${BASE}onnx/text_encoder.onnx`, bytes: 27_348_373 },
-  { url: `${BASE}onnx/vector_estimator.onnx`, bytes: 132_471_364 },
-  { url: `${BASE}onnx/vocoder.onnx`, bytes: 101_405_066 },
-];
-const ASSETS: RemoteFile[] = [
-  { url: `${BASE}onnx/tts.json`, bytes: 8_645 },
-  { url: `${BASE}onnx/unicode_indexer.json`, bytes: 262_134 },
-  { url: `${BASE}voice_styles/F1.json`, bytes: 420_622 },
-  { url: `${BASE}voice_styles/M1.json`, bytes: 421_053 },
-];
-const ALL_FILES = [...ONNX_MODELS, ...ASSETS];
 
 const DENOISE_STEPS = 8;
 
@@ -159,13 +147,5 @@ export async function createEngine(onProgress?: (detail: string) => void): Promi
 }
 
 export async function download(onProgress: ProgressFn): Promise<void> {
-  await fetchToCache(ALL_FILES, onProgress);
-}
-
-export async function isDownloaded(): Promise<boolean> {
-  return allCached(ALL_FILES);
-}
-
-export async function remove(): Promise<void> {
-  await removeCached(ALL_FILES);
+  await fetchToCache(SUPERTONIC_FILES, onProgress);
 }

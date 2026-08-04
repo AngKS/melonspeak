@@ -11,7 +11,9 @@
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:e2e": "node scripts/smoke.mjs --download"
+    "smoke:e2e": "node scripts/smoke.mjs --download",
+    "smoke:firefox": "node scripts/smoke-firefox.mjs",
+    "smoke:firefox:e2e": "node scripts/smoke-firefox.mjs --download"
   },
   "keywords": [],
   "author": "",

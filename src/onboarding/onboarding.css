@@ -22,6 +22,12 @@
   box-sizing: border-box;
   margin: 0;
 }
+/* `hidden` is only a user-agent rule, so any author `display:` below it (e.g.
+   .installed, .progress) wins the cascade and reveals the element anyway.
+   Every `hidden` toggle in onboarding.ts depends on this. */
+[hidden] {
+  display: none !important;
+}
 body {
   background: var(--bg);
   color: var(--fg);
@@ -198,6 +204,16 @@ button.big {
 .installed button {
   font-size: 13px;
   padding: 4px 11px;
+}
+/* Second click of the two-step removal. */
+.installed button.confirm {
+  color: var(--melon);
+  border-color: var(--melon);
+  font-weight: 650;
+}
+.installed button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 .dl-error {
   margin-top: 10px;

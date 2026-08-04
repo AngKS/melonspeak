@@ -5,6 +5,7 @@
 // loaded model; terminate() is the disposal path and reliably frees the
 // model's WASM memory.
 import { loadEngineModule } from '../engines/registry';
+import { isInstalled } from '../engines/model-storage';
 import type { TTSEngine } from '../engines/types';
 import type { ModelId } from '../lib/messages';
 
@@ -55,6 +56,12 @@ async function handle(req: WorkerRequest): Promise<void> {
         await mod.download((loaded, total, file) =>
           scope.postMessage({ type: 'download-progress', loaded, total, file }),
         );
+        // Never report success on faith: the caller terminates this worker the
+        // moment it hears 'downloaded', and settings would then record an
+        // install that isn't on disk.
+        if (!(await isInstalled(req.modelId))) {
+          throw new Error('the model files were not saved to local storage');
+        }
         scope.postMessage({ type: 'downloaded' });
         break;
       }

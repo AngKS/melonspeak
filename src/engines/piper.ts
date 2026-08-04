@@ -5,9 +5,9 @@
 import * as piper from '@mintplex-labs/piper-tts-web';
 import { extUrl } from '../lib/ext-url';
 import { decodeWav } from '../lib/wav';
+import { PIPER_CONFIG_FILE, PIPER_MODEL_FILE, PIPER_VOICE_ID, piperDir } from './model-storage';
 import type { ProgressFn, TTSEngine } from './types';
 
-const VOICE_ID = 'en_US-hfc_female-medium';
 const MODEL_BYTES = 63_201_294;
 
 const WASM_PATHS = {
@@ -19,7 +19,7 @@ const WASM_PATHS = {
 export async function createEngine(onProgress?: (detail: string) => void): Promise<TTSEngine> {
   onProgress?.('Loading Piper…');
   const session = await piper.TtsSession.create({
-    voiceId: VOICE_ID,
+    voiceId: PIPER_VOICE_ID as Parameters<typeof piper.TtsSession.create>[0]['voiceId'],
     wasmPaths: WASM_PATHS,
     progress: (p) => {
       if (p.total) onProgress?.(`Loading Piper… ${Math.round((p.loaded / p.total) * 100)}%`);
@@ -38,15 +38,52 @@ export async function createEngine(onProgress?: (detail: string) => void): Promi
 }
 
 export async function download(onProgress: ProgressFn): Promise<void> {
-  await piper.download(VOICE_ID, (p) => {
-    onProgress(p.loaded, p.total || MODEL_BYTES, VOICE_ID);
-  });
+  const path = piper.PATH_MAP[PIPER_VOICE_ID as keyof typeof piper.PATH_MAP];
+  const base = `${piper.HF_BASE}/${path}`;
+  // Not piper.download(): it starts its OPFS write without awaiting it, so the
+  // 63 MB write was still in flight when this worker got terminated on
+  // completion and only the tiny config file survived — the model looked
+  // installed and every read silently re-downloaded it.
+  await streamToOpfs(base, PIPER_MODEL_FILE, MODEL_BYTES, onProgress);
+  await streamToOpfs(`${base}.json`, PIPER_CONFIG_FILE);
+  onProgress(MODEL_BYTES, MODEL_BYTES, PIPER_MODEL_FILE);
 }
 
-export async function isDownloaded(): Promise<boolean> {
-  return (await piper.stored()).includes(VOICE_ID);
-}
+/** Streams one file into OPFS and resolves only once it is durably written. */
+async function streamToOpfs(
+  url: string,
+  name: string,
+  expectedBytes = 0,
+  onProgress?: ProgressFn,
+): Promise<void> {
+  const dir = await piperDir(true);
+  if (!dir) throw new Error('Local file storage is unavailable in this browser');
+  const res = await fetch(url);
+  if (!res.ok || !res.body) throw new Error(`Download failed (${res.status}) for ${name}`);
+  const total = Number(res.headers.get('Content-Length')) || expectedBytes;
 
-export async function remove(): Promise<void> {
-  await piper.remove(VOICE_ID);
+  const handle = await dir.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  let loaded = 0;
+  try {
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      await writable.write(value);
+      loaded += value.byteLength;
+      onProgress?.(Math.min(loaded, total), total, name);
+    }
+    await writable.close();
+  } catch (err) {
+    // A half-written file must not pass the installed check next time.
+    await writable.abort().catch(() => {});
+    await dir.removeEntry(name).catch(() => {});
+    throw err;
+  }
+  const written = (await (await dir.getFileHandle(name)).getFile()).size;
+  if (total > 0 && written !== total) {
+    await dir.removeEntry(name).catch(() => {});
+    throw new Error(`${name} was saved incompletely (${written} of ${total} bytes)`);
+  }
 }

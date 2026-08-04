@@ -20,7 +20,10 @@ export function installHfFetchCache(): void {
     if (hit) return hit.clone();
     const res = await orig(input, init);
     if (res.ok && /\.(bin|json)$/.test(new URL(url).pathname)) {
-      void cache.put(url, res.clone()).catch(() => {});
+      // Awaited on purpose: these are small (voice embeddings, configs) and a
+      // fire-and-forget put loses the race against the download worker being
+      // terminated the moment the last fetch resolves.
+      await cache.put(url, res.clone()).catch(() => {});
     }
     return res;
   }) as typeof fetch;

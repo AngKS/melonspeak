@@ -52,6 +52,13 @@ export type Message =
   | { target: 'background'; type: 'read-page' }
   | { target: 'background'; type: 'read-selection' }
   | { target: 'background'; type: 'player-cmd'; cmd: PlayerCommand }
+  /** A UI page checked which models are really on disk (engines/model-storage).
+   *  The background owns the downloaded flags, so it reconciles settings. */
+  | {
+      target: 'background';
+      type: 'installed-state';
+      installed: Partial<Record<ModelId, boolean>>;
+    }
   | { target: 'ui'; type: 'status'; status: PlayerStatus }
   | { target: 'ui'; type: 'download-progress'; progress: DownloadProgress }
   | { target: 'ui'; type: 'transcript'; chunks: string[]; title?: string }

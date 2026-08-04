@@ -2,6 +2,7 @@ import type { Message, ModelId, PlayerCommand, PlayerStatus } from '../lib/messa
 import { getSettings, mutateSettings, updateSettings } from '../lib/settings';
 import { openSidebar, primeSidebar } from '../lib/sidebar';
 import { MODELS, MODEL_IDS } from '../engines/registry';
+import { installedModels } from '../engines/model-storage';
 
 primeSidebar();
 
@@ -27,8 +28,16 @@ function openOnboarding(): void {
 }
 
 async function init(): Promise<void> {
-  const settings = await getSettings();
-  const downloaded = MODEL_IDS.filter((id) => settings.downloaded[id]);
+  // The picker lists what is actually on disk, not what settings remember: an
+  // evicted cache or a half-finished download would otherwise offer a model
+  // that can't play a word.
+  const [settings, installed] = await Promise.all([getSettings(), installedModels(MODEL_IDS)]);
+  const downloaded = MODEL_IDS.filter((id) => installed[id]);
+  if (MODEL_IDS.some((id) => Boolean(settings.downloaded[id]) !== installed[id])) {
+    void chrome.runtime
+      .sendMessage({ target: 'background', type: 'installed-state', installed } satisfies Message)
+      .catch(() => {});
+  }
 
   if (downloaded.length === 0) {
     $('setup').hidden = false;

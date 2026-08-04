@@ -35,8 +35,16 @@ npm run build:dev    # unminified with sourcemaps
 npm test             # chunker unit tests
 npm run typecheck
 npm run smoke        # boots the extension in Chrome for Testing, checks all surfaces
-npm run smoke:e2e -- --model=piper   # + real model download & synthesis check
+npm run smoke:e2e -- --model=piper   # + real download, synthesis and removal
+npm run smoke:firefox                # the same surfaces in a real Firefox
+npm run smoke:firefox:e2e -- --model=kokoro
 ```
+
+The `--download` runs assert the model's bytes really are in the Cache API /
+OPFS afterwards, not just that the UI said "Installed": a download that reports
+success without persisting still plays fine (it silently re-downloads at load
+time), so only a storage check catches it. The Firefox runs use
+`/Applications/Firefox.app` — override with `FIREFOX_BIN`.
 
 The smoke tests need the Chrome for Testing binary (branded Chrome ≥137 removed
 `--load-extension`): `npx @puppeteer/browsers install chrome@stable --path .chrome-for-testing`
@@ -55,6 +63,9 @@ The smoke tests need the Chrome for Testing binary (branded Chrome ≥137 remove
   after the first chunk), producer/consumer with bounded lookahead.
 - `src/engines/` — one adapter per model + registry + streaming downloader
   (HuggingFace → Cache API, resumable, progress events).
+  `model-storage.ts` is the single source of truth for what is actually on
+  disk (and for deleting it): storage-only, so UI pages can check without
+  loading any engine code. Every "Installed" claim is verified against it.
 - `src/content/extract.ts` — Readability extraction / selection capture.
 - `src/popup/`, `src/onboarding/`, `src/reader/` — the three surfaces.
 
