@@ -13,6 +13,7 @@
     "offscreen",
     "sidePanel"
   ],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
@@ -20,7 +21,6 @@
     "default_path": "reader/reader.html"
   },
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "MelonSpeak",
     "default_icon": {
       "16": "icons/icon16.png",

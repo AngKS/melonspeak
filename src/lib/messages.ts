@@ -62,8 +62,11 @@ export type PlayerCommand =
 
 export type Message =
   | { target: 'player'; cmd: PlayerCommand }
-  | { target: 'background'; type: 'read-page' }
-  | { target: 'background'; type: 'read-selection' }
+  // tabId is set by the reading view, which knows the active tab of its own
+  // window; without it the background falls back to lastFocusedWindow, which
+  // is only unambiguous when the request came from the context menu.
+  | { target: 'background'; type: 'read-page'; tabId?: number }
+  | { target: 'background'; type: 'read-selection'; tabId?: number }
   | { target: 'background'; type: 'player-cmd'; cmd: PlayerCommand }
   /** A UI page checked which models are really on disk (engines/model-storage).
    *  The background owns the downloaded flags, so it reconciles settings. */
@@ -87,6 +90,26 @@ export const VIZ_PORT = 'melonspeak-viz';
 export type VizMessage =
   | { type: 'snapshot'; status: PlayerStatus; chunks: string[] | null; title?: string }
   | { type: 'levels'; levels: number[] };
+
+/** Port name for the highlight watcher (page → Now Reading view).
+ *
+ * A port rather than sendMessage: the watcher is injected into whatever tab
+ * the user is looking at, and needs to know when to stop. Disconnection is
+ * that signal — the view closing, leaving its idle state, or moving to another
+ * tab all drop the port, and the watcher unhooks itself. A fire-and-forget
+ * broadcaster would keep listening on every page for the life of the tab. */
+export const SELECTION_PORT = 'melonspeak-selection';
+
+/** Sent over the selection port on every (debounced) selection change. Only a
+ *  clamped preview crosses the boundary — a book-length highlight stays in the
+ *  page it came from. */
+export interface SelectionMessage {
+  /** Whitespace-collapsed, ellipsised preview of the highlighted text. */
+  quote: string;
+  words: number;
+  /** Length of the *whole* selection, not the preview. */
+  chars: number;
+}
 
 /** Fire-and-forget broadcast; swallows "no receiving end" errors.
  *

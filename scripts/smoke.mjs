@@ -2,7 +2,8 @@
 // surfaces boot without errors. With --download it also downloads the Piper
 // model and runs a real end-to-end synthesis check.
 import puppeteer from 'puppeteer-core';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
 import {
   MB,
@@ -113,12 +114,58 @@ if (FRESH) {
   }
 }
 
-const popup = await openPage('popup/popup.html', 'popup');
-const setupVisible = await popup.$eval('#setup', (el) => !el.hidden);
-console.log('popup shows setup prompt (no models yet):', setupVisible);
-if (!setupVisible && FRESH) errors.push('popup should show setup prompt on a fresh profile');
+// The toolbar button must open the panel, not a popup: the panel is the only
+// surface carrying the settings and controls now.
+{
+  const manifest = JSON.parse(readFileSync(join(EXT, 'manifest.json'), 'utf8'));
+  console.log('action keys:', Object.keys(manifest.action).join(', '));
+  if (manifest.action.default_popup) {
+    errors.push('action still declares a default_popup; the toolbar button must open the panel');
+  }
+  if (manifest.side_panel?.default_path !== 'reader/reader.html') {
+    errors.push('side_panel no longer points at the reading view');
+  }
+}
 
 const reader = await openPage('reader/reader.html', 'reader');
+
+const setupVisible = await reader.$eval('#setup-actions', (el) => !el.hidden);
+console.log('panel shows setup prompt (no models yet):', setupVisible);
+if (!setupVisible && FRESH) errors.push('panel should show setup prompt on a fresh profile');
+
+// Every control the popup used to own must be reachable from the panel.
+const sheet = await reader.evaluate(async () => {
+  const open = () => document.getElementById('menu-btn').click();
+  open();
+  await new Promise((r) => setTimeout(r, 100));
+  return {
+    expanded: document.getElementById('menu-btn').getAttribute('aria-expanded'),
+    sheetVisible: !document.getElementById('sheet').hidden,
+    hasSpeed: Boolean(document.getElementById('speed')),
+    hasManage: Boolean(document.getElementById('manage')),
+    modelItems: document.querySelectorAll('#model-list .model-item').length,
+  };
+});
+console.log('settings sheet:', JSON.stringify(sheet));
+if (!sheet.sheetVisible || sheet.expanded !== 'true') {
+  errors.push('the ☰ button did not open the settings sheet');
+}
+if (!sheet.hasSpeed || !sheet.hasManage) {
+  errors.push('the settings sheet is missing the speed control or the model manager link');
+}
+if (FRESH && sheet.modelItems !== 0) {
+  errors.push(`fresh profile listed ${sheet.modelItems} installed models`);
+}
+await reader.evaluate(() => document.getElementById('scrim').click());
+
+// Idle reads come from the CTA cards; the footer's split button covers the one
+// case they don't — starting a new read while one is already playing.
+const readButtons = await reader.evaluate(() =>
+  ['cta-page', 'cta-selection', 'read-page-live', 'menu-read-selection'].filter(
+    (id) => !document.getElementById(id),
+  ),
+);
+if (readButtons.length) errors.push(`panel is missing read controls: ${readButtons.join(', ')}`);
 // With nothing being read the badge machinery must be completely inert, and
 // the header must not advertise a click target it won't honour.
 const badgeIdle = await reader.evaluate(() => ({
@@ -350,6 +397,133 @@ if (idleScroll > 20) {
   errors.push(`a finished read must not scroll itself back, got ${idleScroll}`);
 }
 
+// --- Call-to-action cards --------------------------------------------------
+// Served over http rather than data:/file: because <all_urls> is what grants
+// the panel its access, and neither of those schemes is covered by it.
+const FIXTURE_TITLE = 'Fixture article for MelonSpeak';
+const fixtureServer = createServer((_req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(
+    `<!doctype html><html><head><title>${FIXTURE_TITLE}</title></head><body>` +
+      `<p id="para">Every day afternoon I have at least one build running somewhere.</p>` +
+      `</body></html>`,
+  );
+});
+await new Promise((r) => fixtureServer.listen(0, '127.0.0.1', r));
+const fixtureUrl = `http://127.0.0.1:${fixtureServer.address().port}/`;
+
+// The scroll checks above left a 60-line transcript behind, which would put
+// the cards in their compact form. Clear it for the no-transcript case.
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({ target: 'ui', type: 'transcript', chunks: [], title: '' }),
+);
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'idle', modelId: null },
+  }),
+);
+
+const fixture = await browser.newPage();
+pageErrors(fixture, 'fixture');
+await fixture.goto(fixtureUrl, { waitUntil: 'domcontentloaded' });
+// Highlight before the panel starts watching, so this also covers the
+// watcher reporting a selection that predates it.
+await fixture.evaluate(() => {
+  const range = document.createRange();
+  range.selectNodeContents(document.getElementById('para'));
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+});
+// The reading view tracks the active tab of its own window, so the fixture
+// has to actually be the front tab — the view keeps running in the background.
+await fixture.bringToFront();
+await new Promise((r) => setTimeout(r, 1200));
+
+const cards = await reader.evaluate(() => ({
+  ctaHidden: document.getElementById('cta').hidden,
+  full: document.getElementById('cta').classList.contains('full'),
+  pageSub: document.getElementById('cta-page-sub').textContent.trim(),
+  pageDisabled: document.getElementById('cta-page').disabled,
+  selectionDormant: document.getElementById('cta-selection').classList.contains('dormant'),
+  selectionDisabled: document.getElementById('cta-selection').disabled,
+  quote: document.getElementById('cta-selection-quote').textContent.trim(),
+  meta: document.getElementById('cta-selection-meta').textContent.trim(),
+  replayHidden: document.getElementById('cta-replay').hidden,
+}));
+console.log('cta cards with a highlight on the active tab:', cards);
+await reader.screenshot({ path: join(OUT, 'reader-cta.png') });
+
+if (cards.ctaHidden) errors.push('cards should be showing with nothing being read');
+if (!cards.full) errors.push('cards should be full-size with no transcript');
+if (cards.pageDisabled) errors.push('read-page card should be enabled on an http page');
+if (cards.pageSub !== FIXTURE_TITLE) {
+  errors.push(`read-page card should name the active tab, got "${cards.pageSub}"`);
+}
+if (cards.selectionDormant || cards.selectionDisabled) {
+  errors.push('highlight card should light up when the page has a selection');
+}
+if (!cards.quote.includes('Every day afternoon')) {
+  errors.push(`highlight card should quote the selection, got "${cards.quote}"`);
+}
+if (!/^11 words · /.test(cards.meta)) {
+  errors.push(`highlight card should count the selected words, got "${cards.meta}"`);
+}
+if (!cards.replayHidden) errors.push('replay card must not offer to repeat a read that never happened');
+
+// Clearing the highlight must put the card back to sleep.
+await fixture.evaluate(() => window.getSelection().removeAllRanges());
+await new Promise((r) => setTimeout(r, 800));
+const afterClear = await reader.evaluate(() => ({
+  dormant: document.getElementById('cta-selection').classList.contains('dormant'),
+  quoteHidden: document.getElementById('cta-selection-quote').hidden,
+}));
+console.log('highlight card after clearing the selection:', afterClear);
+if (!afterClear.dormant) errors.push('highlight card should go dormant when the selection clears');
+if (!afterClear.quoteHidden) errors.push('a cleared selection must not leave its quote on screen');
+
+// A finished read: transcript kept, cards tucked underneath, replay offered.
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'transcript',
+    chunks: ['First chunk.', 'Second chunk.'],
+    title: 'Test article',
+  }),
+);
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'idle', modelId: null },
+  }),
+);
+await new Promise((r) => setTimeout(r, 800));
+const finished = await reader.evaluate(() => ({
+  compact: document.getElementById('cta').classList.contains('compact'),
+  lyricsVisible: !document.getElementById('lyrics').hidden,
+  replayHidden: document.getElementById('cta-replay').hidden,
+  replaySub: document.getElementById('cta-replay-sub').textContent.trim(),
+  eyebrow: document.getElementById('eyebrow').textContent,
+}));
+console.log('cta cards after a finished read:', finished);
+await reader.screenshot({ path: join(OUT, 'reader-cta-finished.png') });
+if (!finished.compact) errors.push('cards should be compact under a finished transcript');
+if (!finished.lyricsVisible) errors.push('a finished read must keep its transcript on screen');
+if (finished.replayHidden) errors.push('replay card should be offered once a read has finished');
+// Not the title: the header already carries that, and so may the page card.
+if (finished.replaySub !== 'From the top · 2 lines') {
+  errors.push(`replay card should describe the transcript, got "${finished.replaySub}"`);
+}
+if (finished.eyebrow !== 'FINISHED') {
+  errors.push(`eyebrow should read FINISHED, got ${finished.eyebrow}`);
+}
+
+await fixture.close();
+fixtureServer.close();
+
 if (DO_DOWNLOAD) {
   console.log('\n--- e2e: downloading ${MODEL} and synthesizing ---');
   // Track player status broadcasts from the onboarding page.
@@ -497,10 +671,10 @@ if (DO_DOWNLOAD) {
   if (isStored(MODEL, afterRemove)) errors.push(`${MODEL} files survived Remove`);
   await onboarding.screenshot({ path: join(OUT, 'onboarding-removed.png') });
 
-  const popupAfter = await openPage('popup/popup.html', 'popup-after-remove');
-  const backToSetup = await popupAfter.$eval('#setup', (el) => !el.hidden);
-  console.log('popup returns to setup prompt after removing the last model:', backToSetup);
-  if (!backToSetup) errors.push('popup still offers a model after the last one was removed');
+  const panelAfter = await openPage('reader/reader.html', 'panel-after-remove');
+  const backToSetup = await panelAfter.$eval('#setup-actions', (el) => !el.hidden);
+  console.log('panel returns to setup prompt after removing the last model:', backToSetup);
+  if (!backToSetup) errors.push('panel still offers a read after the last model was removed');
 }
 
 await browser.close();

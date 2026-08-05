@@ -31,7 +31,6 @@ async function buildTarget(browser) {
     entryPoints: {
       'player/player': 'src/player/player.ts',
       'player/engine-worker': 'src/player/engine-worker.ts',
-      'popup/popup': 'src/popup/popup.ts',
       'onboarding/onboarding': 'src/onboarding/onboarding.ts',
       'reader/reader': 'src/reader/reader.ts',
     },
@@ -47,6 +46,7 @@ async function buildTarget(browser) {
     entryPoints: {
       background: 'src/background.ts',
       'content/extract': 'src/content/extract.ts',
+      'content/selection-watch': 'src/content/selection-watch.ts',
     },
     format: 'iife',
     outdir: out,
@@ -55,7 +55,7 @@ async function buildTarget(browser) {
   // Static assets.
   cpSync(`src/manifest.${browser}.json`, `${out}/manifest.json`);
   cpSync('src/icons', `${out}/icons`, { recursive: true });
-  for (const page of ['popup', 'onboarding', 'reader']) {
+  for (const page of ['onboarding', 'reader']) {
     cpSync(`src/${page}/${page}.html`, `${out}/${page}/${page}.html`);
     cpSync(`src/${page}/${page}.css`, `${out}/${page}/${page}.css`);
   }

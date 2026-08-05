@@ -3,52 +3,125 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Now Reading — MelonSpeak</title>
+    <title>MelonSpeak</title>
     <link rel="stylesheet" href="reader.css" />
   </head>
   <body>
     <main>
-      <!-- reader.ts adds role=button/tabindex only while the tab being read is
-           backgrounded — a real <button> can't be used here because the header
-           wraps an <h1>. Enter/Space are handled there too. -->
-      <header id="head">
-        <img src="../icons/icon48.png" alt="" width="34" height="34" />
-        <div class="head-text">
-          <p id="eyebrow-row">
-            <span id="eyebrow">NOW READING</span>
-            <span id="bg-badge" hidden></span>
-          </p>
-          <h1 id="title">MelonSpeak</h1>
-        </div>
-      </header>
+      <div id="top">
+        <!-- reader.ts adds role=button/tabindex only while the tab being read is
+             backgrounded — a real <button> can't be used here because the header
+             wraps an <h1>. Enter/Space are handled there too. The menu button is
+             a sibling, not a child, so it never nests inside that role=button. -->
+        <header id="head">
+          <img src="../icons/icon48.png" alt="" width="34" height="34" />
+          <div class="head-text">
+            <p id="eyebrow-row">
+              <span id="eyebrow">NOW READING</span>
+              <span id="bg-badge" hidden></span>
+            </p>
+            <h1 id="title">MelonSpeak</h1>
+          </div>
+        </header>
+        <button id="menu-btn" aria-label="Settings" aria-expanded="false" aria-controls="sheet">
+          ☰
+        </button>
+      </div>
 
       <canvas id="viz"></canvas>
 
       <section id="lyrics" aria-live="off"></section>
 
-      <div id="empty">
-        <p>Nothing is being read right now.</p>
-        <p class="hint">
-          Open any page and press <strong>Read page</strong> in the MelonSpeak popup —
-          or highlight text, right-click, and choose <strong>Speak content</strong>.
-        </p>
-      </div>
+      <!-- Shown when nothing is playing. reader.ts sizes it: 'full' when there
+           is no transcript, 'compact' underneath one a finished read left. -->
+      <section id="cta" hidden>
+        <p id="cta-lead">What should I read?</p>
+
+        <!-- Only after a read ends, and only while its transcript is still in
+             memory — which outlives the page it came from. -->
+        <button class="cta-card" id="cta-replay" type="button" hidden>
+          <span class="cta-icon" aria-hidden="true">↻</span>
+          <span class="cta-body">
+            <span class="cta-title">Read this again</span>
+            <span class="cta-sub" id="cta-replay-sub"></span>
+          </span>
+          <span class="cta-chev" aria-hidden="true">›</span>
+        </button>
+
+        <button class="cta-card" id="cta-page" type="button">
+          <span class="cta-icon" aria-hidden="true">📄</span>
+          <span class="cta-body">
+            <span class="cta-title">Read this page</span>
+            <span class="cta-sub" id="cta-page-sub"></span>
+          </span>
+          <span class="cta-chev" aria-hidden="true">›</span>
+        </button>
+
+        <button class="cta-card dormant" id="cta-selection" type="button" disabled>
+          <span class="cta-icon" aria-hidden="true">✏️</span>
+          <span class="cta-body">
+            <span class="cta-title">Read highlighted text</span>
+            <span class="cta-sub" id="cta-selection-sub">
+              Highlight anything on the page and it lands here
+            </span>
+            <span class="cta-quote" id="cta-selection-quote" hidden></span>
+            <span class="cta-meta" id="cta-selection-meta" hidden></span>
+          </span>
+          <span class="cta-chev" aria-hidden="true">›</span>
+        </button>
+
+        <p id="cta-foot">Right-click a selection anywhere for <strong>Speak content</strong>.</p>
+      </section>
 
       <footer id="bottom">
-        <div id="transport" hidden>
-          <button id="pause" title="Pause">⏸</button>
-          <button id="resume" title="Resume" hidden>▶</button>
-          <button id="stop" title="Stop">⏹</button>
+        <!-- At most one of these shows at a time; see resolveFooterMode. Idle
+             has neither: the CTA cards above own starting a read when nothing
+             is playing, and they are hidden exactly while one is. -->
+        <div id="setup-actions" hidden>
+          <p class="foot-note">Download a voice model to start listening.</p>
+          <button id="finish-setup" class="wide primary">Finish setup</button>
         </div>
-        <div id="model-bar">
-          <div id="model-menu" hidden></div>
-          <button id="model-btn" title="Voice model">
-            <span class="label">Voice model</span>
-            <span id="model-name">—</span>
-            <span class="chev">▾</span>
-          </button>
+
+        <div id="reading-actions" hidden>
+          <div id="transport">
+            <button id="pause" title="Pause">⏸</button>
+            <button id="resume" title="Resume" hidden>▶</button>
+            <button id="stop" title="Stop">⏹</button>
+          </div>
+          <div id="read-split">
+            <button id="read-page-live">▶ &nbsp;Read this page</button>
+            <button id="read-more" aria-label="More read options" aria-expanded="false">▾</button>
+            <div id="read-menu" hidden>
+              <button id="menu-read-page">▶ &nbsp;Read this page</button>
+              <button id="menu-read-selection">▶ &nbsp;Read highlighted text</button>
+            </div>
+          </div>
         </div>
+
+        <p id="meta">
+          <span id="meta-settings"></span>
+          <span title="Pages are read on your device. Nothing is sent anywhere."
+            >100% offline</span
+          >
+        </p>
       </footer>
+
+      <div id="scrim" hidden></div>
+      <aside id="sheet" hidden aria-label="Settings">
+        <div class="grab"></div>
+        <p class="sheet-label">Voice model</p>
+        <div id="model-list"></div>
+        <div class="sheet-row" id="voice-row" hidden>
+          <label for="voice">Voice</label>
+          <select id="voice"></select>
+        </div>
+        <div class="sheet-row">
+          <label for="speed">Speed</label>
+          <input id="speed" type="range" min="0.5" max="2" step="0.1" />
+          <span id="speed-label">1.0×</span>
+        </div>
+        <button id="manage" class="sheet-link">Manage voices…</button>
+      </aside>
     </main>
     <script type="module" src="reader.js"></script>
   </body>

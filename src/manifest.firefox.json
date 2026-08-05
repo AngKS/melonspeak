@@ -16,6 +16,7 @@
     "scripting",
     "contextMenus"
   ],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "page": "background.html"
   },
@@ -28,7 +29,6 @@
     "open_at_install": false
   },
   "action": {
-    "default_popup": "popup/popup.html",
     "default_title": "MelonSpeak",
     "default_icon": {
       "16": "icons/icon16.png",

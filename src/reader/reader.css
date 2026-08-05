@@ -22,6 +22,14 @@ body {
 }
 /* Fluid sizing throughout: the view lives at any width from a narrow side
    panel (~280px) to a full tab. Nothing may ever overflow horizontally. */
+/* The action popup is the fallback surface where neither browser offers a
+   sidebar. Popups size to content, so `height: 100%` alone collapses to
+   nothing — this pins a real box. reader.ts sets the class from ?surface=popup. */
+html.as-popup,
+html.as-popup body {
+  width: 360px;
+  height: 560px;
+}
 main {
   max-width: 700px;
   height: 100%;
@@ -31,11 +39,38 @@ main {
   flex-direction: column;
   gap: clamp(10px, 2vh, 18px);
   min-width: 0;
+  /* Anchors the settings sheet and its scrim. */
+  position: relative;
+  overflow: hidden;
+}
+#top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 header {
   display: flex;
   align-items: center;
   gap: clamp(8px, 2.5vw, 14px);
+  flex: 1;
+  min-width: 0;
+}
+#menu-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#menu-btn:hover,
+#menu-btn[aria-expanded='true'] {
+  background: rgba(255, 255, 255, 0.18);
 }
 header img {
   flex-shrink: 0;
@@ -169,24 +204,243 @@ h1 {
   transform: none;
 }
 
-#empty {
-  flex: 1;
+/* -- Call-to-action cards -------------------------------------------------- */
+
+/* Two sizes of the same block: 'full' owns the panel when nothing has been
+   read, 'compact' tucks under the transcript a finished read left behind. */
+#cta {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
   gap: 10px;
-  text-align: center;
-  color: rgba(255, 255, 255, 0.75);
-  font-size: clamp(16px, 4.4vw, 19px);
-  font-weight: 650;
-  min-height: 0;
+  min-width: 0;
 }
-#empty .hint {
-  font-size: 14px;
+#cta.full {
+  flex: 1;
+  justify-content: center;
+  min-height: 0;
+  /* Long tab titles and quotes make the cards taller than a short panel. */
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#cta.full::-webkit-scrollbar {
+  display: none;
+}
+#cta.compact {
+  flex-shrink: 0;
+  gap: 8px;
+  padding-top: 4px;
+}
+#cta-lead {
+  font-size: clamp(15px, 4vw, 17px);
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.72);
+  text-align: center;
+  margin-bottom: 2px;
+}
+#cta-foot {
+  font-size: 12px;
   font-weight: 450;
-  color: rgba(255, 255, 255, 0.45);
-  max-width: min(380px, 100%);
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.38);
+  text-align: center;
+  margin-top: 2px;
+}
+#cta-foot strong {
+  font-weight: 650;
+  color: rgba(255, 255, 255, 0.5);
+}
+/* The compact form is a follow-up to a transcript, not an introduction. */
+#cta.compact #cta-lead,
+#cta.compact #cta-foot {
+  display: none;
+}
+
+.cta-card {
+  display: flex;
+  /* Top-aligned: a wrapped title or a three-line quote would otherwise leave
+     the icon floating in the middle of the card, away from the label it
+     belongs to. */
+  align-items: flex-start;
+  gap: clamp(10px, 3vw, 14px);
+  width: 100%;
+  padding: clamp(11px, 2.2vh, 15px) clamp(12px, 3vw, 15px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    transform 0.12s;
+}
+#cta.compact .cta-card {
+  padding: 10px 12px;
+  border-radius: 13px;
+}
+.cta-card:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+.cta-card:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.cta-card:focus-visible {
+  outline: 2px solid rgba(224, 74, 92, 0.7);
+  outline-offset: 2px;
+}
+.cta-icon {
+  flex-shrink: 0;
+  font-size: clamp(17px, 4.6vw, 20px);
+  /* Sits on the title's first line rather than the card's centre. */
+  line-height: 1.25;
+}
+.cta-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cta-title {
+  font-size: clamp(14px, 3.8vw, 15.5px);
+  font-weight: 680;
+  line-height: 1.3;
+}
+.cta-sub,
+.cta-quote,
+.cta-meta {
+  font-size: 12.5px;
+  font-weight: 450;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.5);
+  overflow-wrap: anywhere;
+}
+/* One line for a tab title, three for a quote — both clamped so a card can
+   never push the model picker off a short panel. */
+.cta-sub {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.cta-quote {
+  margin-top: 4px;
+  padding-left: 9px;
+  border-left: 2px solid rgba(127, 215, 154, 0.45);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12.5px;
+  font-style: italic;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+#cta.compact .cta-quote {
+  -webkit-line-clamp: 2;
+}
+.cta-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(127, 215, 154, 0.85);
+}
+.cta-chev {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 19px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+/* Read this page: the primary action, in the watermelon red.
+   Every rule below excludes .needs-access explicitly — an id selector would
+   otherwise outrank the amber treatment and paint a card that cannot act. */
+#cta-page:not(:disabled):not(.needs-access) {
+  border-color: rgba(224, 74, 92, 0.42);
+  background: rgba(224, 74, 92, 0.14);
+}
+#cta-page:not(:disabled):not(.needs-access):hover {
+  background: rgba(224, 74, 92, 0.22);
+}
+/* Once a read has finished, playing it again is the likelier intent, so the
+   replay card takes the red and the page card steps back to neutral. */
+#cta.compact #cta-replay {
+  border-color: rgba(224, 74, 92, 0.42);
+  background: rgba(224, 74, 92, 0.14);
+}
+#cta.compact #cta-replay:hover {
+  background: rgba(224, 74, 92, 0.22);
+}
+#cta.compact #cta-page:not(:disabled):not(.needs-access) {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+#cta.compact #cta-page:not(:disabled):not(.needs-access):hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+#cta-replay .cta-icon {
+  font-size: clamp(15px, 4vw, 17px);
+  color: rgba(255, 154, 164, 0.95);
+}
+
+/* Nothing highlighted yet: present, explained, and plainly not ready. */
+.cta-card.dormant {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.17);
+  background: none;
+  cursor: default;
+}
+.cta-card.dormant .cta-title {
+  color: rgba(255, 255, 255, 0.55);
+}
+.cta-card.dormant .cta-icon {
+  opacity: 0.5;
+}
+.cta-card.dormant .cta-chev {
+  visibility: hidden;
+}
+
+/* Text is waiting: solid, green, and briefly lit on arrival. */
+#cta-selection:not(.dormant):not(.needs-access) {
+  border-color: rgba(127, 215, 154, 0.5);
+  background: rgba(42, 140, 74, 0.16);
+  animation: cta-wake 0.6s ease-out;
+}
+#cta-selection:not(.dormant):not(.needs-access):hover {
+  background: rgba(42, 140, 74, 0.26);
+}
+@keyframes cta-wake {
+  0% {
+    box-shadow: 0 0 0 0 rgba(127, 215, 154, 0);
+  }
+  35% {
+    box-shadow: 0 0 0 4px rgba(127, 215, 154, 0.28);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(127, 215, 154, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #cta-selection:not(.dormant):not(.needs-access) {
+    animation: none;
+  }
+  .cta-card:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* Firefox grants host permissions on request, not at install. Until then the
+   cards can neither read the page nor see a highlight. */
+.cta-card.needs-access {
+  border-style: dashed;
+  border-color: rgba(255, 200, 120, 0.4);
+  background: rgba(255, 190, 100, 0.08);
+}
+.cta-card.needs-access .cta-sub {
+  color: rgba(255, 205, 140, 0.75);
 }
 
 #bottom {
@@ -195,19 +449,61 @@ h1 {
   gap: clamp(8px, 1.6vh, 12px);
   flex-shrink: 0;
 }
+
+/* -- Footer: setup / reading ---------------------------------------------- */
+
+#setup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.foot-note {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 13px;
+  text-align: center;
+}
+button.wide {
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font: 650 14px/1.2 system-ui, -apple-system, sans-serif;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button.wide:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+button.primary {
+  background: linear-gradient(115deg, #2a8c4a, #e04a5c);
+  border-color: transparent;
+}
+button.primary:hover {
+  filter: brightness(1.1);
+  background: linear-gradient(115deg, #2a8c4a, #e04a5c);
+}
+
+/* One row while reading: pause/stop, then the split read button. */
+#reading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 #transport {
   display: flex;
-  justify-content: center;
-  gap: clamp(10px, 3vw, 14px);
+  gap: 8px;
+  flex-shrink: 0;
 }
 #transport button {
-  width: clamp(42px, 12vw, 52px);
-  height: clamp(42px, 12vw, 52px);
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
-  font-size: clamp(16px, 4.4vw, 19px);
+  font-size: 15px;
   cursor: pointer;
   backdrop-filter: blur(8px);
   transition: background 0.15s;
@@ -216,59 +512,179 @@ h1 {
   background: rgba(255, 255, 255, 0.16);
 }
 
-/* -- Model selector ------------------------------------------------------- */
-
-#model-bar {
+#read-split {
   position: relative;
+  flex: 1;
+  min-width: 0;
   display: flex;
-  justify-content: center;
-}
-#model-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: 11px;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.85);
-  font: 600 13px/1.2 system-ui, -apple-system, sans-serif;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: visible;
+}
+#read-split > button {
+  border: 0;
+  background: none;
+  color: #fff;
+  font: 650 13px/1.2 system-ui, -apple-system, sans-serif;
   cursor: pointer;
   transition: background 0.15s;
 }
-#model-btn:hover {
-  background: rgba(255, 255, 255, 0.13);
-}
-#model-btn .label {
-  color: rgba(255, 255, 255, 0.45);
-  font-weight: 500;
-  white-space: nowrap;
-}
-#model-btn #model-name {
+#read-page-live {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 8px;
+  border-radius: 10px 0 0 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#model-btn .chev {
-  color: rgba(255, 255, 255, 0.45);
+#read-more {
+  width: 32px;
   flex-shrink: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 0 10px 10px 0;
+  color: rgba(255, 255, 255, 0.6);
 }
-#model-menu {
+#read-split > button:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+#read-menu {
   position: absolute;
+  right: 0;
   bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  min-width: 230px;
-  max-width: calc(100vw - 24px);
+  min-width: 220px;
+  max-width: min(320px, 90vw);
   padding: 6px;
-  border-radius: 14px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: #1b1e22;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
-  z-index: 5;
+  z-index: 6;
 }
+#read-menu button {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: #fff;
+  font: 600 13px/1.2 system-ui, -apple-system, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+#read-menu button:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+#meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+#meta-settings {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -- Settings sheet ------------------------------------------------------- */
+
+#scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 8;
+}
+#sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 82%;
+  overflow-y: auto;
+  padding: 10px clamp(12px, 4vw, 20px) clamp(14px, 3vh, 20px);
+  border-radius: 16px 16px 0 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  background: #191c1f;
+  box-shadow: 0 -14px 34px rgba(0, 0, 0, 0.55);
+}
+.grab {
+  width: 34px;
+  height: 4px;
+  flex-shrink: 0;
+  margin: 0 auto 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+}
+.sheet-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+#model-list {
+  display: flex;
+  flex-direction: column;
+}
+.sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sheet-row label {
+  width: 46px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.sheet-row select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #23262a;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+#speed {
+  flex: 1;
+  min-width: 0;
+  accent-color: #e04a5c;
+}
+#speed-label {
+  width: 40px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.7);
+}
+.sheet-link {
+  padding: 9px 2px 2px;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: none;
+  color: rgba(255, 255, 255, 0.6);
+  font: 600 12.5px/1.2 system-ui, -apple-system, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.sheet-link:hover {
+  color: #fff;
+}
+
 .model-item {
   display: flex;
   align-items: center;
@@ -303,11 +719,4 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.model-item.manage {
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 0 0 9px 9px;
-  margin-top: 4px;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 12.5px;
 }

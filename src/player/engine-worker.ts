@@ -1,7 +1,7 @@
 // Dedicated worker hosting the TTS engines. All extension pages of one
 // browser profile share a single renderer main thread, so running WASM
-// inference on it froze every surface (popup, reader — and with them the
-// browser UI) while a chunk synthesized. The player spawns one worker per
+// inference on it froze every surface (the reading panel, onboarding — and with
+// them the browser UI) while a chunk synthesized. The player spawns one worker per
 // loaded model; terminate() is the disposal path and reliably frees the
 // model's WASM memory.
 import { loadEngineModule } from '../engines/registry';

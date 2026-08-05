@@ -8,7 +8,7 @@
 //   by evaluated location.href (BiDi reports its URL as "about:blank").
 // - page.reload()/goto never resolve for extension pages; don't use them.
 import puppeteer from 'puppeteer-core';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
   MB,
@@ -38,6 +38,20 @@ const browser = await puppeteer.launch({
 });
 
 const errors = [];
+
+// BiDi cannot navigate to moz-extension:// pages, so the sidebar itself can't
+// be driven here — but the wiring that makes the toolbar button open it is a
+// static fact of the manifest, and that much is worth asserting.
+{
+  const manifest = JSON.parse(readFileSync(join(EXT, 'manifest.json'), 'utf8'));
+  if (manifest.action.default_popup) {
+    errors.push('action still declares a default_popup; the toolbar button must open the sidebar');
+  }
+  if (manifest.sidebar_action?.default_panel !== 'reader/reader.html') {
+    errors.push('sidebar_action no longer points at the reading view');
+  }
+}
+
 await browser.installExtension(EXT);
 
 // The background script opens onboarding itself on install.
