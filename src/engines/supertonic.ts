@@ -14,7 +14,8 @@ import {
   SUPERTONIC_ONNX as ONNX_MODELS,
 } from './model-storage';
 import { preprocessText, textToIds } from './supertonic-text';
-import type { ProgressFn, SynthesisResult, TTSEngine } from './types';
+import { wasmThreads, webgpuAvailable } from './accel';
+import type { EngineOptions, ProgressFn, SynthesisResult, TTSEngine } from './types';
 
 const DENOISE_STEPS = 8;
 
@@ -28,11 +29,14 @@ interface StyleJson {
 }
 
 let ortConfigured = false;
-function configureOrt(): void {
+function configureOrt(accel = false): void {
   if (ortConfigured) return;
   ortConfigured = true;
   ort.env.wasm.wasmPaths = extUrl('wasm/ort/');
-  ort.env.wasm.numThreads = 1;
+  // >1 only under the acceleration beta with cross-origin isolation; the
+  // count is fixed at first session creation, which is why this engine is
+  // cached per (model, accel) and reloaded when the toggle flips.
+  ort.env.wasm.numThreads = wasmThreads(accel);
   ort.env.wasm.proxy = false;
 }
 
@@ -50,20 +54,41 @@ function gaussianNoise(n: number): Float32Array {
   return out;
 }
 
-export async function createEngine(onProgress?: (detail: string) => void): Promise<TTSEngine> {
-  configureOrt();
+export async function createEngine(
+  onProgress?: (detail: string) => void,
+  opts?: EngineOptions,
+): Promise<TTSEngine> {
+  const accel = opts?.accel ?? false;
+  configureOrt(accel);
   const [cfgs, indexer] = await Promise.all([
     cachedJson<Cfgs>(`${BASE}onnx/tts.json`),
     cachedJson<number[]>(`${BASE}onnx/unicode_indexer.json`),
   ]);
 
+  // WebGPU is attempted per session with a WASM retry: an adapter can exist
+  // and still fail at session creation (unsupported ops, driver limits), and
+  // one stubborn model must not take down the other three.
+  const useGpu = accel && (await webgpuAvailable());
+  const threads = wasmThreads(accel);
+  const mode = useGpu ? ' (GPU)' : threads > 1 ? ` (${threads} threads)` : '';
+  const createSession = async (buf: ArrayBuffer): Promise<ort.InferenceSession> => {
+    if (useGpu) {
+      try {
+        return await ort.InferenceSession.create(new Uint8Array(buf), {
+          executionProviders: ['webgpu', 'wasm'],
+        });
+      } catch {
+        // Fall through to the plain WASM path.
+      }
+    }
+    return ort.InferenceSession.create(new Uint8Array(buf), { executionProviders: ['wasm'] });
+  };
+
   const sessions: ort.InferenceSession[] = [];
   for (const [i, file] of ONNX_MODELS.entries()) {
-    onProgress?.(`Loading Supertonic… (${i + 1}/${ONNX_MODELS.length})`);
+    onProgress?.(`Loading Supertonic… (${i + 1}/${ONNX_MODELS.length})${mode}`);
     const buf = await cachedBuffer(file.url);
-    sessions.push(
-      await ort.InferenceSession.create(new Uint8Array(buf), { executionProviders: ['wasm'] }),
-    );
+    sessions.push(await createSession(buf));
   }
   const [durationPredictor, textEncoder, vectorEstimator, vocoder] = sessions;
 

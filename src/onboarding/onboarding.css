@@ -225,3 +225,37 @@ button.big {
   display: grid;
   gap: 8px;
 }
+
+/* Beta feature toggle — deliberately NOT .card: model-card selectors
+   (.card, .card input) drive download flows and the smoke harness. */
+.beta-card {
+  display: flex;
+  gap: 14px;
+  background: var(--card);
+  border: 1.5px solid var(--edge);
+  border-radius: 14px;
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.beta-card:has(input:checked) {
+  border-color: var(--melon);
+}
+.beta-card input[type='checkbox'] {
+  margin-top: 4px;
+  width: 17px;
+  height: 17px;
+  accent-color: var(--melon);
+  flex-shrink: 0;
+}
+.beta-card .body {
+  flex: 1;
+  min-width: 0;
+}
+.beta-card .title {
+  font-weight: 650;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

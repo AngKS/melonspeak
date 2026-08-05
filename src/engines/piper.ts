@@ -3,10 +3,12 @@
 // and ONNX runtime are bundled inside the extension, so after the one-time
 // model download everything runs offline.
 import * as piper from '@mintplex-labs/piper-tts-web';
+import * as ort from 'onnxruntime-web';
 import { extUrl } from '../lib/ext-url';
 import { decodeWav } from '../lib/wav';
 import { PIPER_CONFIG_FILE, PIPER_MODEL_FILE, PIPER_VOICE_ID, piperDir } from './model-storage';
-import type { ProgressFn, TTSEngine } from './types';
+import { wasmThreads } from './accel';
+import type { EngineOptions, ProgressFn, TTSEngine } from './types';
 
 const MODEL_BYTES = 63_201_294;
 
@@ -16,13 +18,31 @@ const WASM_PATHS = {
   piperData: extUrl('wasm/piper/piper_phonemize.data'),
 };
 
-export async function createEngine(onProgress?: (detail: string) => void): Promise<TTSEngine> {
-  onProgress?.('Loading Piper…');
+export async function createEngine(
+  onProgress?: (detail: string) => void,
+  opts?: EngineOptions,
+): Promise<TTSEngine> {
+  const threads = wasmThreads(opts?.accel ?? false);
+  // piper-tts-web sets env.wasm.numThreads = hardwareConcurrency
+  // unconditionally during init (it shares this ort module instance), which
+  // would make the beta toggle meaningless for this engine once the pages are
+  // cross-origin isolated. Pinning the property keeps the toggle in charge.
+  try {
+    Object.defineProperty(ort.env.wasm, 'numThreads', {
+      configurable: true,
+      get: () => threads,
+      set: () => {},
+    });
+  } catch {
+    // Leave the library's default; threads still require isolation to engage.
+  }
+  const suffix = threads > 1 ? ` (${threads} threads)` : '';
+  onProgress?.(`Loading Piper…${suffix}`);
   const session = await piper.TtsSession.create({
     voiceId: PIPER_VOICE_ID as Parameters<typeof piper.TtsSession.create>[0]['voiceId'],
     wasmPaths: WASM_PATHS,
     progress: (p) => {
-      if (p.total) onProgress?.(`Loading Piper… ${Math.round((p.loaded / p.total) * 100)}%`);
+      if (p.total) onProgress?.(`Loading Piper… ${Math.round((p.loaded / p.total) * 100)}%${suffix}`);
     },
   });
   return {

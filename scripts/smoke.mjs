@@ -18,6 +18,7 @@ const CHROME = process.env.CHROME_BIN ?? '.chrome-for-testing/chrome/mac_arm-151
 const EXT = resolve('dist/chrome');
 const OUT = process.env.SMOKE_OUT ?? 'dist/smoke';
 const DO_DOWNLOAD = process.argv.includes('--download');
+const DO_ACCEL = process.argv.includes('--accel');
 const MODEL = process.argv.find((a) => a.startsWith('--model='))?.slice(8) ?? 'piper';
 const MODEL_INDEX = { kokoro: 0, supertonic: 1, piper: 2 }[MODEL];
 const FRESH = !existsSync(join(OUT, 'profile'));
@@ -589,6 +590,68 @@ if (DO_DOWNLOAD) {
     console.log('sample synthesis: speaking =', sawSpeaking, ', finished =', sawIdleAfter);
     if (lastErr) errors.push(`player error during sample: ${lastErr}`);
     else if (!sawSpeaking) errors.push('sample never reached speaking state');
+  }
+
+  // --- acceleration beta --------------------------------------------------
+  if (DO_ACCEL && !errors.some((e) => e.startsWith(MODEL))) {
+    console.log('\n--- e2e: accelerated synthesis (beta toggle) ---');
+    // Every extension page carries the COEP/COOP manifest keys, so isolation
+    // here implies the offscreen player (and the worker it spawns) has it.
+    const isolated = await onboarding.evaluate(() => ({
+      crossOriginIsolated,
+      sab: typeof SharedArrayBuffer === 'function',
+    }));
+    console.log('extension page isolation:', JSON.stringify(isolated));
+    if (!isolated.crossOriginIsolated || !isolated.sab) {
+      errors.push('extension pages not crossOriginIsolated — COEP/COOP manifest keys ineffective');
+    }
+    await onboarding.evaluate(() => {
+      window.__statuses = [];
+      const t = document.getElementById('accel-toggle');
+      t.checked = true;
+      t.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await new Promise((r) => setTimeout(r, 600)); // settings write + model-changed
+    await onboarding.evaluate((idx) => {
+      document.querySelectorAll('.card')[idx].querySelector('.try').click();
+    }, MODEL_INDEX);
+    const tA = Date.now();
+    let accSpeaking = false;
+    let accFinished = false;
+    let accErr = null;
+    let details = [];
+    while (Date.now() - tA < 180_000) {
+      const statuses = await onboarding.evaluate(() => window.__statuses);
+      accSpeaking = statuses.some((s) => s.state === 'speaking');
+      details = statuses.filter((s) => s.detail).map((s) => s.detail);
+      accErr = statuses.findLast?.((s) => s.state === 'error')?.detail ?? null;
+      if (accSpeaking && statuses.at(-1)?.state === 'idle') {
+        accFinished = true;
+        break;
+      }
+      if (accErr) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    // The "(N threads)"/"(GPU)" suffix is computed inside the engine worker,
+    // so seeing it proves isolation reached the worker and the engine took
+    // the accelerated path — not just that a flag was set.
+    const accelDetail = details.find((d) => / threads\)|\(GPU\)/.test(d)) ?? null;
+    console.log(
+      'accelerated sample: speaking =', accSpeaking,
+      ', finished =', accFinished,
+      ', mode =', accelDetail,
+    );
+    if (accErr) errors.push(`player error during accelerated sample: ${accErr}`);
+    else if (!accSpeaking) errors.push('accelerated sample never reached speaking');
+    else if (!accelDetail) {
+      errors.push('acceleration on, but the engine loaded without threads/GPU');
+    }
+    // Restore the default for the flows that follow.
+    await onboarding.evaluate(() => {
+      const t = document.getElementById('accel-toggle');
+      t.checked = false;
+      t.dispatchEvent(new Event('change', { bubbles: true }));
+    });
   }
 
   // --- uninstall ----------------------------------------------------------
