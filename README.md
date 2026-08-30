@@ -16,8 +16,9 @@ ever leaves your computer.
 - **Now Reading view** — Apple Music-style auto-scrolling lyrics with a live
   audio visualizer; click any line to jump there. Opens automatically when a
   read starts, and badges itself **⤴ BACKGROUND** when you switch away from the
-  page being read — click the header to go back. Closing that tab stops the
-  read and says so.
+  page being read — click the header to go back. Follow a link in that tab and
+  it badges **⤴ PAGE CHANGED** instead, with a 7-second offer to read the page
+  it moved to. Closing that tab stops the read and says so.
 - **Switch models/voices** — from the **☰** menu in the panel, at any time:
 
 | Model | Real name | Download | Notes |

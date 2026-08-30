@@ -401,10 +401,13 @@ if (idleScroll > 20) {
 // Served over http rather than data:/file: because <all_urls> is what grants
 // the panel its access, and neither of those schemes is covered by it.
 const FIXTURE_TITLE = 'Fixture article for MelonSpeak';
-const fixtureServer = createServer((_req, res) => {
+// Any path but "/" is a second article, so the same tab can navigate between
+// two real documents for the page-changed checks further down.
+const pageTitle = (path) => (path === '/' ? FIXTURE_TITLE : `Fixture ${path}`);
+const fixtureServer = createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   res.end(
-    `<!doctype html><html><head><title>${FIXTURE_TITLE}</title></head><body>` +
+    `<!doctype html><html><head><title>${pageTitle(req.url)}</title></head><body>` +
       `<p id="para">Every day afternoon I have at least one build running somewhere.</p>` +
       `</body></html>`,
   );
@@ -520,6 +523,123 @@ if (finished.replaySub !== 'From the top · 2 lines') {
 if (finished.eyebrow !== 'FINISHED') {
   errors.push(`eyebrow should read FINISHED, got ${finished.eyebrow}`);
 }
+
+// --- The tab being read navigates away --------------------------------------
+// The background watches the tab it recorded, so drive real navigations of a
+// real tab rather than writing the flag by hand.
+const fixtureTabId = await swWorker.evaluate(async (url) => {
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((t) => t.url === url)?.id ?? null;
+}, fixtureUrl);
+if (fixtureTabId === null) errors.push('could not find the fixture tab to navigate');
+
+await swWorker.evaluate(
+  (tabId, url) => chrome.storage.session.set({ readingTab: { tabId, url } }),
+  fixtureTabId,
+  fixtureUrl,
+);
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'speaking', modelId: null },
+  }),
+);
+await new Promise((r) => setTimeout(r, 600));
+
+const readToast = () =>
+  reader.evaluate(() => ({
+    hidden: document.getElementById('nav-toast').hidden,
+    text: document.getElementById('nav-toast-text').textContent,
+  }));
+
+// An anchor jump is the same document; the transcript still matches the page.
+await fixture.evaluate(() => {
+  location.hash = 'section-2';
+});
+await new Promise((r) => setTimeout(r, 700));
+const afterHash = await readBadge();
+const hashToast = await readToast();
+console.log('badge after an anchor jump:', afterHash);
+if (!afterHash.hidden) errors.push('an anchor jump must not claim the page changed');
+if (!hashToast.hidden) errors.push('an anchor jump must not raise the toast');
+
+// A real navigation of that tab: the text on screen is from a page that is
+// no longer there.
+await fixture.goto(`${fixtureUrl}second`, { waitUntil: 'domcontentloaded' });
+await new Promise((r) => setTimeout(r, 900));
+const navigated = await readBadge();
+const navToast = await readToast();
+console.log('badge after the read tab navigated:', navigated, navToast);
+await reader.screenshot({ path: join(OUT, 'reader-page-changed.png') });
+if (navigated.hidden) errors.push('badge should show once the tab being read navigates away');
+if (!navigated.text.includes('PAGE CHANGED')) {
+  errors.push(`badge should read PAGE CHANGED, got "${navigated.text}"`);
+}
+if (navigated.interactive) {
+  errors.push('header must not offer to return to a page that is no longer there');
+}
+if (navToast.hidden) errors.push('a navigation should offer to read the new page');
+if (!navToast.text.includes('Fixture /second')) {
+  errors.push(`toast should name the new page, got "${navToast.text}"`);
+}
+
+// Back to the page the read came from: nothing to explain any more.
+await fixture.goto(fixtureUrl, { waitUntil: 'domcontentloaded' });
+await new Promise((r) => setTimeout(r, 900));
+const wentBack = await readBadge();
+const backToast = await readToast();
+console.log('badge after going back to the page being read:', wentBack);
+if (!wentBack.hidden) errors.push('going back to the page being read should clear the badge');
+if (!backToast.hidden) errors.push('going back should take the toast down with the badge');
+
+// The toast is transient; the badge is not.
+await fixture.goto(`${fixtureUrl}second`, { waitUntil: 'domcontentloaded' });
+await new Promise((r) => setTimeout(r, 900));
+if ((await readToast()).hidden) errors.push('a second navigation should raise the toast again');
+await new Promise((r) => setTimeout(r, 7500));
+const settled = await readBadge();
+const goneToast = await readToast();
+console.log('after the toast times out:', settled, goneToast);
+if (!goneToast.hidden) errors.push('the toast should take itself down after 7s');
+if (settled.hidden) errors.push('the badge must outlive the toast — the page is still changed');
+
+// Accepting the offer reads the tab that moved, not whichever tab is in front.
+await swWorker.evaluate(() => {
+  globalThis.__reads = [];
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.target === 'background' && msg.type === 'read-page') globalThis.__reads.push(msg.tabId);
+  });
+});
+await fixture.goto(`${fixtureUrl}third`, { waitUntil: 'domcontentloaded' });
+await new Promise((r) => setTimeout(r, 900));
+// Following a second link is a fresh offer about a different page, even
+// though the tab was already away from the page being read.
+const rearmed = await readToast();
+console.log('toast after a further navigation:', rearmed);
+if (rearmed.hidden) errors.push('a further navigation should offer its own page too');
+else if (!rearmed.text.includes('Fixture /third')) {
+  errors.push(`re-raised toast should name the newest page, got "${rearmed.text}"`);
+}
+await reader.bringToFront();
+if (!rearmed.hidden) await reader.click('#nav-toast-read');
+await new Promise((r) => setTimeout(r, 600));
+const reads = await swWorker.evaluate(() => globalThis.__reads);
+const acceptedToast = await readToast();
+console.log('read-page requests from the toast:', reads);
+if (reads[0] !== fixtureTabId) {
+  errors.push(`toast should read the tab that moved (${fixtureTabId}), got ${reads[0]}`);
+}
+if (!acceptedToast.hidden) errors.push('the toast should close once its offer is accepted');
+
+await swWorker.evaluate(() => chrome.storage.session.remove('readingTab'));
+await swWorker.evaluate(() =>
+  chrome.runtime.sendMessage({
+    target: 'ui',
+    type: 'status',
+    status: { state: 'idle', modelId: null },
+  }),
+);
 
 await fixture.close();
 fixtureServer.close();

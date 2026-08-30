@@ -19,7 +19,9 @@ export interface ReadActions {
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
-function requestRead(mode: 'page' | 'selection', tabId: number | undefined): void {
+/** Exported because the "this tab moved" toast starts a read too, and it
+ *  targets the tab that moved rather than whichever tab is in front. */
+export function requestRead(mode: 'page' | 'selection', tabId: number | undefined): void {
   void chrome.runtime
     .sendMessage({
       target: 'background',

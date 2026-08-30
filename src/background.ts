@@ -4,7 +4,7 @@ import type { ExtractResult } from './content/extract';
 import type { Message, ModelId, PlayerCommand, PlayerStatus } from './lib/messages';
 import { broadcast } from './lib/messages';
 import type { ReadingTabState } from './lib/reading-tab';
-import { READING_TAB_KEY } from './lib/reading-tab';
+import { READING_TAB_KEY, hasNavigatedAway } from './lib/reading-tab';
 import { getSettings, mutateSettings } from './lib/settings';
 import { hasSidebarAction, openSidebar, toggleSidebar } from './lib/sidebar';
 import { resolveActionSurface } from './lib/action-surface';
@@ -66,8 +66,11 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
  *  state the view must not miss: an MV3 worker can be torn down the moment a
  *  listener returns, dropping any send queued after an await. Storage has no
  *  such lifetime coupling. */
-async function setReadingTab(tabId: number | null, reason?: 'tab-closed'): Promise<void> {
-  const state: ReadingTabState = reason ? { tabId, reason } : { tabId };
+async function setReadingTab(
+  tabId: number | null,
+  extra?: { reason?: 'tab-closed'; url?: string },
+): Promise<void> {
+  const state: ReadingTabState = { tabId, ...extra };
   try {
     await chrome.storage.session.set({ [READING_TAB_KEY]: state });
   } catch {
@@ -82,8 +85,29 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     // Record the reason BEFORE stopping: stopAll() broadcasts an empty
     // transcript, and the reading view must already know why or it wipes the
     // lyrics with nothing left to explain the silence.
-    await setReadingTab(null, 'tab-closed');
+    await setReadingTab(null, { reason: 'tab-closed' });
     await deliverToPlayer({ type: 'stop' });
+  });
+});
+
+// A tab can leave the page being read without going away — following a link is
+// the ordinary case, and nothing about it stops playback. The transcript then
+// belongs to a document that is gone, which the reading view has to be able to
+// say, so the fact is recorded beside the tab id. Going Back clears it again.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  const url = changeInfo.url;
+  if (url === undefined) return;
+  void chrome.storage.session.get(READING_TAB_KEY).then(async (stored) => {
+    const state = stored[READING_TAB_KEY] as ReadingTabState | undefined;
+    if (!state || state.tabId !== tabId) return;
+    const navigated = hasNavigatedAway(state.url, url);
+    const next: ReadingTabState = { ...state, navigated };
+    // Where it went, not merely that it went: a second link click is a fresh
+    // offer to make, and an unchanged record reaches no one.
+    if (navigated) next.movedTo = url;
+    else delete next.movedTo;
+    if ((state.navigated ?? false) === navigated && state.movedTo === next.movedTo) return;
+    await chrome.storage.session.set({ [READING_TAB_KEY]: next });
   });
 });
 
@@ -202,7 +226,13 @@ async function readTab(tabId: number, mode: 'page' | 'selection', fallbackText?:
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content/extract.js'] });
     const injected = await chrome.scripting.executeScript({
       target: { tabId },
-      func: (m: 'page' | 'selection') => globalThis.__melonExtract?.(m),
+      // The URL is read in the same execution that produced the text, so it
+      // names the exact document the transcript came from — a tabs.get
+      // afterwards could already be reporting the next page.
+      func: (m: 'page' | 'selection') => {
+        const r = globalThis.__melonExtract?.(m);
+        return r ? { ...r, url: location.href } : undefined;
+      },
       args: [mode],
     });
     result = injected[0]?.result ?? undefined;
@@ -228,7 +258,7 @@ async function readTab(tabId: number, mode: 'page' | 'selection', fallbackText?:
   }
   // Only a successful extraction claims the tab: a failed read leaves an
   // already-playing read's badge alone.
-  await setReadingTab(tabId);
+  await setReadingTab(tabId, { url: result.url });
   await deliverToPlayer({ type: 'speak', text, title });
 }
 
