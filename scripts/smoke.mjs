@@ -5,6 +5,7 @@ import puppeteer from 'puppeteer-core';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
+import { chromePath } from './chrome-path.mjs';
 import {
   MB,
   cardState,
@@ -14,7 +15,7 @@ import {
   storageProblems,
 } from './storage-probe.mjs';
 
-const CHROME = process.env.CHROME_BIN ?? '.chrome-for-testing/chrome/mac_arm-151.0.7922.71/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
+const CHROME = chromePath();
 const EXT = resolve('dist/chrome');
 const OUT = process.env.SMOKE_OUT ?? 'dist/smoke';
 const DO_DOWNLOAD = process.argv.includes('--download');
@@ -26,7 +27,7 @@ mkdirSync(OUT, { recursive: true });
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
-  headless: 'shell' === 'never' ? false : true,
+  headless: true,
   args: [
     `--disable-extensions-except=${EXT}`,
     `--load-extension=${EXT}`,
@@ -645,7 +646,7 @@ await fixture.close();
 fixtureServer.close();
 
 if (DO_DOWNLOAD) {
-  console.log('\n--- e2e: downloading ${MODEL} and synthesizing ---');
+  console.log(`\n--- e2e: downloading ${MODEL} and synthesizing ---`);
   // Track player status broadcasts from the onboarding page.
   await onboarding.bringToFront();
   await onboarding.evaluate(() => {

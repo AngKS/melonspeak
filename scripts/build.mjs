@@ -1,8 +1,22 @@
 // Builds dist/chrome and dist/firefox from one codebase.
 import * as esbuild from 'esbuild';
-import { cpSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const dev = process.argv.includes('--dev');
+
+// package.json is the single source of the version: it was previously repeated
+// in both manifests, where a release bump could (and did) update one and not
+// the others. Both stores reject a re-upload whose version didn't increase, so
+// a stale manifest is a failed submission rather than a cosmetic slip.
+const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+// Chrome accepts 1-4 dot-separated integers, each 0-65535, and rejects
+// anything else at upload time — long after this build succeeded.
+if (!/^\d{1,5}(\.\d{1,5}){0,3}$/.test(version)) {
+  throw new Error(
+    `package.json version "${version}" is not a valid extension version ` +
+      `(1-4 dot-separated integers, each 0-65535). Pre-release suffixes are not accepted.`,
+  );
+}
 
 const common = {
   bundle: true,
@@ -52,8 +66,18 @@ async function buildTarget(browser) {
     outdir: out,
   });
 
-  // Static assets.
-  cpSync(`src/manifest.${browser}.json`, `${out}/manifest.json`);
+  // Static assets. The manifest is stamped rather than copied: the source
+  // manifests carry no "version" at all, so there is no second copy to go
+  // stale, and what a store reviewer reads in the source archive can never
+  // disagree with what was uploaded. Inserted after "name" so the built
+  // manifest still reads in the conventional order.
+  const source = JSON.parse(readFileSync(`src/manifest.${browser}.json`, 'utf8'));
+  const manifest = {};
+  for (const [key, value] of Object.entries(source)) {
+    manifest[key] = value;
+    if (key === 'name') manifest.version = version;
+  }
+  writeFileSync(`${out}/manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
   cpSync('src/icons', `${out}/icons`, { recursive: true });
   for (const page of ['onboarding', 'reader']) {
     cpSync(`src/${page}/${page}.html`, `${out}/${page}/${page}.html`);

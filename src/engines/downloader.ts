@@ -10,6 +10,31 @@ export interface RemoteFile {
   bytes: number;
 }
 
+/**
+ * Why a model file could not be fetched, in words the user can act on.
+ *
+ * Model weights live in HuggingFace repos this extension does not control,
+ * and one of them (Supertone/supertonic) is being archived upstream. A repo
+ * that disappears answers 401/403/404, which as a bare "Download failed (404)"
+ * reads as a MelonSpeak bug and sends people to the wrong place. Name the
+ * cause instead, and point at the model that can still be installed.
+ */
+export function downloadErrorMessage(status: number, name: string): string {
+  if (status === 404 || status === 401 || status === 403) {
+    return (
+      `${name} is no longer available from its publisher (HTTP ${status}). ` +
+      `This model's files were withdrawn upstream — pick a different voice model in setup.`
+    );
+  }
+  if (status === 429) {
+    return `${name} was rate-limited by the download server (HTTP 429). Wait a few minutes and try again.`;
+  }
+  if (status >= 500) {
+    return `The download server failed while sending ${name} (HTTP ${status}). Try again shortly.`;
+  }
+  return `Download failed (HTTP ${status}) for ${name}`;
+}
+
 export async function fetchToCache(files: RemoteFile[], onProgress: ProgressFn): Promise<void> {
   const cache = await caches.open(CACHE_NAME);
   const total = files.reduce((sum, f) => sum + f.bytes, 0);
@@ -23,7 +48,7 @@ export async function fetchToCache(files: RemoteFile[], onProgress: ProgressFn):
     }
     const res = await fetch(file.url);
     if (!res.ok || !res.body) {
-      throw new Error(`Download failed (${res.status}) for ${name}`);
+      throw new Error(downloadErrorMessage(res.status, name));
     }
     const chunks: BlobPart[] = [];
     let received = 0;

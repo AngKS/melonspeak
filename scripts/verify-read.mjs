@@ -5,10 +5,10 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 import { join, resolve } from 'node:path';
+import { chromePath } from './chrome-path.mjs';
 import { cpSync, rmSync } from 'node:fs';
 
-const CHROME =
-  '.chrome-for-testing/chrome/mac_arm-151.0.7922.71/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
+const CHROME = chromePath();
 const OUT = process.env.SMOKE_OUT ?? 'dist/smoke';
 
 // activeTab can't be granted programmatically, so test with an explicit host

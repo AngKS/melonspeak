@@ -12,12 +12,9 @@ import * as esbuild from 'esbuild';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { chromePath } from './chrome-path.mjs';
 
-const CHROME =
-  process.env.CHROME_BIN ??
-  resolve(
-    '../../../.chrome-for-testing/chrome/mac_arm-151.0.7922.71/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
-  );
+const CHROME = chromePath();
 const EXT = resolve('dist/chrome');
 const OUT = process.env.SMOKE_OUT ?? 'dist/measure';
 const MODEL = process.argv.find((a) => a.startsWith('--model='))?.slice(8) ?? 'kokoro';
