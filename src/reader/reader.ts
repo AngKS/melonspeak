@@ -9,7 +9,7 @@ import type {
   SelectionMessage,
   VizMessage,
 } from '../lib/messages';
-import type { ReadingTabState } from '../lib/reading-tab';
+import type { BadgeState, ReadingTabState } from '../lib/reading-tab';
 import { READING_TAB_KEY, computeBadge } from '../lib/reading-tab';
 import {
   resolveReadTarget,
@@ -21,7 +21,7 @@ import type { Settings } from '../lib/settings';
 import { getSettings, mutateSettings, onSettingsChanged } from '../lib/settings';
 import { MODEL_IDS } from '../engines/registry';
 import { installedModels } from '../engines/model-storage';
-import { initReadActions } from './read-actions';
+import { initReadActions, requestRead } from './read-actions';
 import { initSettingsMenu } from './settings-menu';
 
 // The fallback surface pins its own size; see reader.css. Nothing else in the
@@ -44,6 +44,10 @@ const titleEl = document.getElementById('title') as HTMLElement;
 const eyebrowEl = document.getElementById('eyebrow') as HTMLElement;
 const headEl = document.getElementById('head') as HTMLElement;
 const badgeEl = document.getElementById('bg-badge') as HTMLElement;
+const navToastEl = document.getElementById('nav-toast') as HTMLElement;
+const navToastTextEl = document.getElementById('nav-toast-text') as HTMLElement;
+const navToastReadEl = document.getElementById('nav-toast-read') as HTMLButtonElement;
+const navToastCloseEl = document.getElementById('nav-toast-close') as HTMLButtonElement;
 const canvas = document.getElementById('viz') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 
@@ -70,6 +74,15 @@ let activeTabUrl: string | undefined;
 let myWindowId: number | null = null;
 /** Set when the background ended the read because the tab closed. */
 let stopReason: 'tab-closed' | null = null;
+/** That tab has moved to another page since the read began; what is on screen
+ *  came from a document that is no longer there. */
+let readingTabNavigated = false;
+/** Where it moved to, so a second link click reads as a new offer rather than
+ *  a repeat of the one already made. */
+let readingTabMovedTo: string | undefined;
+/** Last rendered badge, so the toast can ask what the header already decided
+ *  rather than re-deriving liveness from the status. */
+let badgeState: BadgeState = 'none';
 
 function sendPlayerCmd(cmd: PlayerCommand): void {
   void chrome.runtime
@@ -124,16 +137,20 @@ document.addEventListener('keydown', (e) => {
 // job, so it still happens with the sidebar shut.
 
 function renderBadge(): void {
-  const state = computeBadge({
+  const state = (badgeState = computeBadge({
     readingTabId,
     activeTabId,
     playerState: lastStatus?.state ?? 'idle',
     stopReason,
-  });
+    navigated: readingTabNavigated,
+  }));
   badgeEl.hidden = state === 'none';
   if (state === 'background') {
     badgeEl.textContent = '⤴ BACKGROUND';
     badgeEl.className = 'badge backgrounded';
+  } else if (state === 'navigated') {
+    badgeEl.textContent = '⤴ PAGE CHANGED';
+    badgeEl.className = 'badge changed';
   } else if (state === 'stopped-tab-closed') {
     badgeEl.textContent = '⊘ PAGE CLOSED';
     badgeEl.className = 'badge closed';
@@ -141,6 +158,8 @@ function renderBadge(): void {
     // read didn't finish, the page went away.
     eyebrowEl.textContent = 'STOPPED';
   }
+  // The offer outlives neither the fact behind it nor the read it belongs to.
+  if (state !== 'navigated') hideNavToast();
   // Button semantics come and go with the state, so the header never sits in
   // the tab order advertising an action it won't perform.
   const clickable = state === 'background';
@@ -176,6 +195,52 @@ headEl.addEventListener('keydown', (e) => {
   e.preventDefault();
   void returnToReadingTab();
 });
+
+// -- "This tab moved" toast -------------------------------------------------
+// The chip states the fact for as long as it holds; this carries only the
+// offer, so it is transient and raised on the transition alone. A panel opened
+// long after a navigation gets the chip and no interruption.
+
+const NAV_TOAST_MS = 7000;
+let navToastTimer: ReturnType<typeof setTimeout> | undefined;
+
+function setNavToastTitle(title: string | undefined): void {
+  navToastTextEl.textContent = title
+    ? `This tab moved to “${title}”`
+    : 'This tab moved to another page';
+}
+
+function showNavToast(): void {
+  const tabId = readingTabId;
+  setNavToastTitle(undefined);
+  navToastEl.hidden = false;
+  clearTimeout(navToastTimer);
+  navToastTimer = setTimeout(hideNavToast, NAV_TOAST_MS);
+  if (tabId === null) return;
+  // Best effort: the new title may not have landed yet, in which case the
+  // onUpdated listener below fills it in while the toast is still up.
+  void chrome.tabs
+    .get(tabId)
+    .then((tab) => {
+      if (tabId === readingTabId && !navToastEl.hidden) setNavToastTitle(tab.title);
+    })
+    .catch(() => {});
+}
+
+function hideNavToast(): void {
+  navToastEl.hidden = true;
+  clearTimeout(navToastTimer);
+  navToastTimer = undefined;
+}
+
+navToastReadEl.addEventListener('click', () => {
+  // The tab that moved, not the active one: the panel may well be in front of
+  // a different tab by now, and this offer was about that page.
+  const tabId = readingTabId;
+  hideNavToast();
+  if (tabId !== null) requestRead('page', tabId);
+});
+navToastCloseEl.addEventListener('click', hideNavToast);
 
 /** Guards against a slow tabs.get for tab A landing after the user has
  *  already moved to tab B. */
@@ -218,6 +283,11 @@ chrome.tabs.onActivated.addListener((info) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // The toast is raised on a URL change, and the title of what that URL
+  // loaded arrives after it.
+  if (tabId === readingTabId && changeInfo.title !== undefined && !navToastEl.hidden) {
+    setNavToastTitle(changeInfo.title);
+  }
   if (tabId !== activeTabId) return;
   if (changeInfo.url !== undefined || changeInfo.title !== undefined) {
     activeTabUrl = tab.url;
@@ -231,14 +301,23 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-function applyReadingTab(state: ReadingTabState | undefined): void {
+function applyReadingTab(state: ReadingTabState | undefined, fromChange = false): void {
+  const wasNavigated = readingTabNavigated;
+  const wasMovedTo = readingTabMovedTo;
   readingTabId = state?.tabId ?? null;
+  readingTabNavigated = state?.navigated === true;
+  readingTabMovedTo = state?.movedTo;
   // Set before the player's empty-transcript broadcast can land — that
   // ordering is what lets setTranscript() know to keep the lyrics.
   stopReason = state?.reason === 'tab-closed' ? 'tab-closed' : null;
   lyricsEl.classList.toggle('stopped', stopReason === 'tab-closed');
   renderView();
   renderBadge();
+  // renderBadge has just weighed liveness for us: 'navigated' means there is
+  // a read this offer can still replace. Each destination gets its own offer;
+  // anything else about the record changing does not.
+  const newDestination = !wasNavigated || readingTabMovedTo !== wasMovedTo;
+  if (fromChange && newDestination && badgeState === 'navigated') showNavToast();
 }
 
 // storage.session is the source of truth, so a sidebar opened mid-read gets
@@ -246,7 +325,7 @@ function applyReadingTab(state: ReadingTabState | undefined): void {
 // background worker being alive to tell it.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session' || !changes[READING_TAB_KEY]) return;
-  applyReadingTab(changes[READING_TAB_KEY].newValue as ReadingTabState | undefined);
+  applyReadingTab(changes[READING_TAB_KEY].newValue as ReadingTabState | undefined, true);
 });
 
 async function loadReadingTab(): Promise<void> {

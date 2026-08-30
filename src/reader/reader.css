@@ -110,6 +110,13 @@ header img {
   border: 1px solid rgba(224, 74, 92, 0.5);
   color: #ff9aa4;
 }
+/* Amber, not the red of 'backgrounded': nothing is wrong, the tab simply
+   isn't showing this text any more. */
+#bg-badge.changed {
+  background: rgba(255, 176, 84, 0.2);
+  border: 1px solid rgba(255, 176, 84, 0.45);
+  color: #ffc987;
+}
 #bg-badge.closed {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -448,6 +455,8 @@ h1 {
   flex-direction: column;
   gap: clamp(8px, 1.6vh, 12px);
   flex-shrink: 0;
+  /* Anchors the "this tab moved" toast to the top of the footer. */
+  position: relative;
 }
 
 /* -- Footer: setup / reading ---------------------------------------------- */
@@ -589,6 +598,84 @@ button.primary:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* -- "This tab moved" toast ----------------------------------------------- */
+#nav-toast {
+  /* Floats clear of the footer rather than displacing it: the transport must
+     not jump under a pointer on its way to Pause. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 10px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 13px;
+  border-radius: 13px;
+  border: 1px solid rgba(255, 176, 84, 0.32);
+  background: #24211d;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  animation: toast-in 180ms ease-out;
+}
+/* Transform only, never opacity: a panel whose rendering is throttled (a
+   background tab, an unfocused window) may never advance this animation, and
+   an entrance that starts at opacity 0 would leave the toast invisible there. */
+@keyframes toast-in {
+  from {
+    transform: translateY(8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #nav-toast {
+    animation: none;
+  }
+}
+/* Page titles run long; two lines is the whole budget. */
+#nav-toast-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.8);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+#nav-toast-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+#nav-toast-read {
+  padding: 7px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 176, 84, 0.45);
+  background: rgba(255, 176, 84, 0.16);
+  color: #ffc987;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#nav-toast-read:hover {
+  background: rgba(255, 176, 84, 0.26);
+}
+#nav-toast-close {
+  padding: 7px 8px;
+  border-radius: 9px;
+  border: 0;
+  background: none;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 12px;
+  cursor: pointer;
+}
+#nav-toast-close:hover {
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* -- Settings sheet ------------------------------------------------------- */

@@ -8,6 +8,9 @@ export interface ExtractResult {
   text: string;
   title: string;
   error?: string;
+  /** Address of the document the text came from. Attached by the caller in
+   *  the page, not by the extractor itself. */
+  url?: string;
 }
 
 declare global {

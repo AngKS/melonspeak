@@ -30,7 +30,7 @@ const { trimSilence } = await import(join(outdir, 'trim-silence.js'));
 const { normalizeForTTS, expandForSpeech } = await import(join(outdir, 'tts-normalize.js'));
 const { serializeReadable } = await import(join(outdir, 'readable-text.js'));
 const { preprocessText, textToIds } = await import(join(outdir, 'supertonic-text.js'));
-const { computeBadge } = await import(join(outdir, 'reading-tab.js'));
+const { computeBadge, hasNavigatedAway } = await import(join(outdir, 'reading-tab.js'));
 const { resolveSpaceAction, shouldFollowActiveLine, resolveFooterMode, resolveReadTarget } =
   await import(join(outdir, 'reader-controls.js'));
 const { resolveActionSurface } = await import(join(outdir, 'action-surface.js'));
@@ -513,6 +513,59 @@ test('tab-closed outranks playback state, which is idle by then', () => {
     badge({ readingTabId: null, activeTabId: 9, playerState: 'idle', stopReason: 'tab-closed' }),
     'stopped-tab-closed',
   );
+});
+
+// -- reading-tab: the tab navigated away from what we are reading -----------
+
+test('same-tab navigation is badged even though that tab is still active', () => {
+  assert.equal(badge({ navigated: true }), 'navigated');
+});
+
+test('navigation outranks backgrounding: the page is gone, not merely behind', () => {
+  assert.equal(badge({ navigated: true, activeTabId: 9 }), 'navigated');
+});
+
+test('a closed tab outranks a navigated one', () => {
+  assert.equal(
+    badge({ readingTabId: null, navigated: true, playerState: 'idle', stopReason: 'tab-closed' }),
+    'stopped-tab-closed',
+  );
+});
+
+test('navigation is not badged once the read is over', () => {
+  for (const playerState of ['idle', 'loading-model', 'error']) {
+    assert.equal(badge({ navigated: true, playerState }), 'none', playerState);
+  }
+});
+
+test('a navigated read needs no active tab to be badged', () => {
+  assert.equal(badge({ navigated: true, activeTabId: null }), 'navigated');
+});
+
+test('the same address is not a navigation', () => {
+  assert.equal(hasNavigatedAway('https://ex.com/a', 'https://ex.com/a'), false);
+});
+
+test('a trailing slash is the same address', () => {
+  assert.equal(hasNavigatedAway('https://ex.com', 'https://ex.com/'), false);
+});
+
+test('an anchor jump keeps the document it was reading', () => {
+  assert.equal(hasNavigatedAway('https://ex.com/a#top', 'https://ex.com/a#part-2'), false);
+});
+
+test('a different path is a navigation', () => {
+  assert.equal(hasNavigatedAway('https://ex.com/a', 'https://ex.com/b'), true);
+});
+
+test('a different query is a navigation: it is different content', () => {
+  assert.equal(hasNavigatedAway('https://ex.com/a?page=1', 'https://ex.com/a?page=2'), true);
+});
+
+test('an unknown or unparseable address never claims a navigation', () => {
+  assert.equal(hasNavigatedAway(undefined, 'https://ex.com/a'), false);
+  assert.equal(hasNavigatedAway('https://ex.com/a', undefined), false);
+  assert.equal(hasNavigatedAway('not a url', 'https://ex.com/a'), false);
 });
 
 // -- acceleration gating ----------------------------------------------------

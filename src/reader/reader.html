@@ -74,6 +74,18 @@
       </section>
 
       <footer id="bottom">
+        <!-- Raised for 7s when the tab being read moves to another page. The
+             header chip is what persists; this is the one-off offer to follow
+             the tab to what it is showing now. It lives in the footer so it
+             floats just clear of the transport whatever height that is. -->
+        <div id="nav-toast" hidden role="status" aria-live="polite">
+          <p id="nav-toast-text"></p>
+          <div id="nav-toast-actions">
+            <button id="nav-toast-read" type="button">Read it instead</button>
+            <button id="nav-toast-close" type="button" aria-label="Dismiss">✕</button>
+          </div>
+        </div>
+
         <!-- At most one of these shows at a time; see resolveFooterMode. Idle
              has neither: the CTA cards above own starting a read when nothing
              is playing, and they are hidden exactly while one is. -->
