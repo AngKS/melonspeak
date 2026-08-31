@@ -6,6 +6,7 @@ import * as piper from '@mintplex-labs/piper-tts-web';
 import * as ort from 'onnxruntime-web';
 import { extUrl } from '../lib/ext-url';
 import { decodeWav } from '../lib/wav';
+import { downloadErrorMessage } from './downloader';
 import { PIPER_CONFIG_FILE, PIPER_MODEL_FILE, PIPER_VOICE_ID, piperDir } from './model-storage';
 import { wasmThreads } from './accel';
 import type { EngineOptions, ProgressFn, TTSEngine } from './types';
@@ -79,7 +80,7 @@ async function streamToOpfs(
   const dir = await piperDir(true);
   if (!dir) throw new Error('Local file storage is unavailable in this browser');
   const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`Download failed (${res.status}) for ${name}`);
+  if (!res.ok || !res.body) throw new Error(downloadErrorMessage(res.status, name));
   const total = Number(res.headers.get('Content-Length')) || expectedBytes;
 
   const handle = await dir.getFileHandle(name, { create: true });

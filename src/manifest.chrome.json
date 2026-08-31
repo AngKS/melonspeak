@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MelonSpeak",
-  "version": "0.1.0",
   "description": "Read any page aloud with fully offline neural text-to-speech. Nothing ever leaves your device.",
+  "homepage_url": "https://github.com/AngKS/melonspeak",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -13,7 +13,9 @@
     "offscreen",
     "sidePanel"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },

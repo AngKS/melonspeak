@@ -1,13 +1,28 @@
 {
   "name": "melonspeak",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "MelonSpeak - fully offline neural TTS browser extension",
+  "author": "AngKS",
+  "license": "MIT",
+  "homepage": "https://github.com/AngKS/melonspeak#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AngKS/melonspeak.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AngKS/melonspeak/issues"
+  },
   "directories": {
     "doc": "docs"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "scripts": {
     "build": "node scripts/icons.mjs && node scripts/build.mjs",
     "build:dev": "node scripts/icons.mjs && node scripts/build.mjs --dev",
+    "assets": "node scripts/store-assets.mjs",
+    "package": "npm run build && node scripts/package.mjs",
     "test": "node scripts/test.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
@@ -15,11 +30,19 @@
     "smoke:firefox": "node scripts/smoke-firefox.mjs",
     "smoke:firefox:e2e": "node scripts/smoke-firefox.mjs --download"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "text-to-speech",
+    "tts",
+    "offline",
+    "browser-extension",
+    "accessibility",
+    "onnx",
+    "kokoro",
+    "piper"
+  ],
   "type": "module",
   "dependencies": {
+    "@huggingface/transformers": "3.8.1",
     "@mintplex-labs/piper-tts-web": "1.0.4",
     "@mozilla/readability": "0.6.0",
     "kokoro-js": "1.2.1",

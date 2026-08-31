@@ -1,7 +1,7 @@
 // Bundles TS modules under test to the scratch dir, then runs assertions.
 import * as esbuild from 'esbuild';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -871,6 +871,94 @@ test('pages no extension can script are refused up front', () => {
   assert.equal(isReadableUrl('https://chromewebstore.google.com/detail/x'), false);
   assert.equal(isReadableUrl('https://addons.mozilla.org/en-US/firefox/'), false);
   assert.equal(isReadableUrl(undefined), false);
+});
+
+// ---------------------------------------------------------------------------
+// Distribution manifests. These assert store-blocking facts that are invisible
+// until an upload is rejected — the kind of thing a refactor silently undoes.
+// ---------------------------------------------------------------------------
+
+const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+const chromeManifest = JSON.parse(readFileSync('src/manifest.chrome.json', 'utf8'));
+const firefoxManifest = JSON.parse(readFileSync('src/manifest.firefox.json', 'utf8'));
+
+test('the extension version is a shape both stores accept', () => {
+  // Chrome: 1-4 dot-separated integers, 0-65535, no pre-release suffix.
+  assert.match(pkg.version, /^\d{1,5}(\.\d{1,5}){0,3}$/);
+  for (const part of pkg.version.split('.')) {
+    assert.ok(Number(part) <= 65535, `version part ${part} exceeds 65535`);
+  }
+});
+
+test('the Firefox manifest declares its data collection', () => {
+  // Mandatory for new AMO submissions since 2025-11-03: without this key the
+  // submission is rejected outright. MelonSpeak transmits nothing.
+  const gecko = firefoxManifest.browser_specific_settings?.gecko;
+  assert.deepEqual(gecko?.data_collection_permissions, { required: ['none'] });
+});
+
+test('the Firefox minimum version can actually read that declaration', () => {
+  // data_collection_permissions needs Firefox 140+; promising an older floor
+  // ships the key to browsers that ignore it.
+  const min = Number(
+    firefoxManifest.browser_specific_settings?.gecko?.strict_min_version?.split('.')[0],
+  );
+  assert.ok(min >= 140, `strict_min_version is ${min}, needs >= 140`);
+});
+
+test('both manifests declare only permissions the code uses', () => {
+  // An unused permission is a documented Chrome Web Store rejection reason.
+  const source = ['src', 'scripts']
+    .flatMap((dir) => readdirSync(dir, { recursive: true, encoding: 'utf8' }).map((f) => join(dir, f)))
+    .filter((f) => /\.(ts|mjs)$/.test(f))
+    .map((f) => readFileSync(f, 'utf8'))
+    .join('\n');
+  // Every Chrome permission maps to a chrome.<permission> namespace, so the
+  // call site is derivable rather than listed — a permission added later is
+  // checked by default instead of silently skipped. Only permissions that
+  // grant a capability with no API surface of their own are exempt, and each
+  // has to be named here deliberately.
+  const NO_API_SURFACE = new Set(['activeTab', 'unlimitedStorage']);
+  for (const [name, manifest] of [
+    ['chrome', chromeManifest],
+    ['firefox', firefoxManifest],
+  ]) {
+    for (const perm of manifest.permissions) {
+      if (NO_API_SURFACE.has(perm)) continue;
+      assert.ok(
+        source.includes(`chrome.${perm}`),
+        `${name} declares "${perm}" but never calls chrome.${perm} — ` +
+          `an unused permission is a documented store rejection reason`,
+      );
+    }
+  }
+});
+
+test('neither manifest can load remote code', () => {
+  // MV3 forbids remotely hosted code; a CSP that allowed it would be a
+  // rejection at review, and 'wasm-unsafe-eval' is the one addition needed to
+  // run the bundled ONNX runtime.
+  for (const [name, manifest] of [
+    ['chrome', chromeManifest],
+    ['firefox', firefoxManifest],
+  ]) {
+    const csp = manifest.content_security_policy.extension_pages;
+    assert.match(csp, /script-src 'self' 'wasm-unsafe-eval'/, `${name} CSP`);
+    assert.ok(!/https?:/.test(csp), `${name} CSP allows a remote origin: ${csp}`);
+  }
+});
+
+test('the store listings document every permission that is declared', () => {
+  // A permission with no written justification is the most common Chrome Web
+  // Store rejection; this keeps the docs honest as the manifests change.
+  const listings =
+    readFileSync('docs/store/chrome-listing.md', 'utf8') +
+    readFileSync('docs/store/firefox-listing.md', 'utf8');
+  const declared = new Set([...chromeManifest.permissions, ...firefoxManifest.permissions]);
+  for (const perm of declared) {
+    assert.ok(listings.includes(perm), `no justification written for "${perm}"`);
+  }
+  assert.ok(listings.includes('<all_urls>'), 'no justification written for host_permissions');
 });
 
 if (failures > 0) {
